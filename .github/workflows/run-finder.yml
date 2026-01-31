@@ -1,0 +1,60 @@
+name: Run BookOff Profit Finder
+
+on:
+  schedule:
+    # 毎日 9時、15時、21時（日本時間）に実行
+    - cron: '0 0,6,12 * * *'
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  find-profits:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests playwright
+          playwright install chromium
+
+      - name: Download price cache
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: price-cache
+          path: .
+
+      - name: Run Finder (CD New Arrivals)
+        env:
+          KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python main.py --new --categories cd --limit 50
+
+      - name: Run Finder (DVD New Arrivals)
+        env:
+          KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python main.py --new --categories dvd --limit 50
+
+      - name: Upload price cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: price-cache
+          path: price_cache.json
+          retention-days: 90
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ github.run_number }}
+          path: profit_akita_*.csv
+          retention-days: 30
