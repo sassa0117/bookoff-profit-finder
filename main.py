@@ -34,9 +34,11 @@ FBA_FEE_RATE = 0.15  # 15%
 FBA_SHIPPING = 200   # 送料（円）
 MIN_PROFIT = 300     # 最低利益（円）
 
-# ゴミキャッシュ設定
+# キャッシュ設定
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "price_cache.json")
+SEEN_FILE = os.path.join(os.path.dirname(__file__), "seen_products.json")
 MIN_AMAZON_PRICE = 500  # この価格以下はゴミ扱い（円）
+KEEPA_DELAY = 3  # Keepa API呼び出し間隔（秒）
 
 # 都道府県リスト
 PREFECTURES = [
@@ -65,6 +67,23 @@ def save_price_cache(cache):
     """価格キャッシュを保存"""
     with open(CACHE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def load_seen_products():
+    """処理済み商品IDを読み込む"""
+    if os.path.exists(SEEN_FILE):
+        try:
+            with open(SEEN_FILE, 'r', encoding='utf-8') as f:
+                return set(json.load(f))
+        except:
+            return set()
+    return set()
+
+
+def save_seen_products(seen):
+    """処理済み商品IDを保存"""
+    with open(SEEN_FILE, 'w', encoding='utf-8') as f:
+        json.dump(list(seen), f)
 
 
 def is_garbage_jan(jan, cache):
@@ -377,7 +396,9 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     results = []
     tokens_left = 300
     price_cache = load_price_cache()
+    seen_products = load_seen_products()
     cache_hits = 0
+    seen_skips = 0
 
     mode_str = "新着" if use_new_arrivals else "カテゴリ"
     print(f"=== ブックオフ利益商品ファインダー ===")
@@ -401,8 +422,15 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
             product_ids = get_product_ids(cat_url, limit=limit_per_category)
         print(f"商品数: {len(product_ids)}")
 
-        for i, pid in enumerate(product_ids):
-            print(f"\n[{i+1}/{len(product_ids)}] 商品ID: {pid}")
+        # 処理済み商品を除外
+        new_product_ids = [pid for pid in product_ids if pid not in seen_products]
+        if len(product_ids) != len(new_product_ids):
+            print(f"処理済みスキップ: {len(product_ids) - len(new_product_ids)}件")
+            seen_skips += len(product_ids) - len(new_product_ids)
+
+        for i, pid in enumerate(new_product_ids):
+            print(f"\n[{i+1}/{len(new_product_ids)}] 商品ID: {pid}")
+            seen_products.add(pid)  # 処理済みとしてマーク
 
             # 商品詳細取得
             product = get_product_details(pid)
@@ -462,8 +490,8 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 print("  → トークン不足、停止")
                 break
 
-            # Keepa API
-            time.sleep(0.5)
+            # Keepa API（レート制限対策で間隔を空ける）
+            time.sleep(KEEPA_DELAY)
             keepa = get_keepa_data(product['jan'])
 
             if not keepa:
@@ -548,14 +576,17 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
     # キャッシュ保存
     save_price_cache(price_cache)
+    save_seen_products(seen_products)
 
     # サマリー
     profit_items = [r for r in results if r['status'] == '利益あり']
     print(f"\n{target_prefecture}在庫あり: {len(results)}件")
     print(f"利益あり: {len(profit_items)}件")
     print(f"残りトークン: {tokens_left}")
+    print(f"処理済みスキップ: {seen_skips}件")
     print(f"キャッシュヒット: {cache_hits}件（トークン節約）")
     print(f"キャッシュ総数: {len(price_cache)}件")
+    print(f"処理済み総数: {len(seen_products)}件")
 
     # Discord通知
     webhook_url = discord_webhook or os.environ.get("DISCORD_WEBHOOK_URL")
@@ -569,7 +600,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="ブックオフ利益商品ファインダー（秋田県フィルター付き）")
     parser.add_argument("--categories", nargs="+", default=["dvd"], help="カテゴリ (dvd, cd, game)")
-    parser.add_argument("--limit", type=int, default=20, help="カテゴリあたりの商品数")
+    parser.add_argument("--limit", type=int, default=200, help="カテゴリあたりの商品数")
     parser.add_argument("--output", type=str, help="出力ファイル名")
     parser.add_argument("--prefecture", type=str, default="秋田県", help="対象都道府県")
     parser.add_argument("--new", action="store_true", help="新着モード（Playwright使用）")
