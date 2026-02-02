@@ -298,18 +298,14 @@ def get_keepa_data(jan_code):
         return None
 
 
-def send_discord_notification(webhook_url, results):
-    """Discord Webhookで利益商品・Amazon未登録商品を通知"""
-    if not webhook_url or not results:
+def send_discord_notification(webhook_url, results, stats=None):
+    """Discord Webhookで結果サマリーと利益商品を通知"""
+    if not webhook_url:
         return
 
     # 利益あり + Amazon未登録を通知対象に
     profit_items = [r for r in results if r.get('status') == '利益あり']
     unregistered_items = [r for r in results if r.get('status') == 'Amazon未登録']
-
-    if not profit_items and not unregistered_items:
-        print("通知対象なし、スキップ")
-        return
 
     # 利益商品の通知
     embeds = []
@@ -347,22 +343,38 @@ def send_discord_notification(webhook_url, results):
         }
         embeds.append(embed)
 
-    # メッセージ作成
+    # サマリー作成
+    stats = stats or {}
+    summary_parts = []
+    if stats.get('checked'):
+        summary_parts.append(f"チェック: {stats['checked']}件")
+    if stats.get('skipped'):
+        summary_parts.append(f"スキップ: {stats['skipped']}件")
+
     content_parts = []
     if profit_items:
         content_parts.append(f"🎯 利益商品: {len(profit_items)}件")
     if unregistered_items:
         content_parts.append(f"📦 Amazon未登録: {len(unregistered_items)}件")
 
+    # メッセージ作成
+    if content_parts:
+        content = f"**発見！** {' / '.join(content_parts)}"
+    else:
+        content = "**チェック完了** 見込み商品なし"
+
+    if summary_parts:
+        content += f"\n({' / '.join(summary_parts)})"
+
     payload = {
-        "content": f"**発見！** {' / '.join(content_parts)}",
-        "embeds": embeds[:10]  # Discord制限: 最大10embeds
+        "content": content,
+        "embeds": embeds[:10] if embeds else []
     }
 
     try:
         r = requests.post(webhook_url, json=payload, timeout=10)
         if r.status_code == 204:
-            print(f"Discord通知送信完了: {len(profit_items)}件")
+            print(f"Discord通知送信完了")
         else:
             print(f"Discord通知失敗: {r.status_code}")
     except Exception as e:
@@ -588,10 +600,14 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     print(f"キャッシュ総数: {len(price_cache)}件")
     print(f"処理済み総数: {len(seen_products)}件")
 
-    # Discord通知
+    # Discord通知（結果あるなしに関わらず送信）
     webhook_url = discord_webhook or os.environ.get("DISCORD_WEBHOOK_URL")
     if webhook_url:
-        send_discord_notification(webhook_url, results)
+        stats = {
+            'checked': len(results),
+            'skipped': seen_skips + cache_hits
+        }
+        send_discord_notification(webhook_url, results, stats)
 
     return results
 
