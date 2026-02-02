@@ -125,12 +125,13 @@ def get_product_ids(category_url, limit=50):
         return []
 
 
-def get_new_arrivals(tab="cd", limit=50):
-    """新着ページからPlaywrightで商品IDを取得
+def get_new_arrivals(tab="cd", limit=50, seen_products=None):
+    """新着ページからPlaywrightで商品IDを取得（無限スクロール対応）
 
     Args:
         tab: タブ名 (cd, dvd, game, book, comic)
         limit: 取得上限
+        seen_products: 処理済み商品IDのset（指定すると未処理が見つかるまでスクロール）
     """
     from playwright.sync_api import sync_playwright
 
@@ -144,6 +145,8 @@ def get_new_arrivals(tab="cd", limit=50):
     }
 
     url = "https://shopping.bookoff.co.jp/list/arrival"
+    max_scrolls = 20  # 最大スクロール回数（約1000件）
+    min_unseen = 10   # 最低限見つけたい未処理件数
 
     try:
         print(f"  Playwright起動中...")
@@ -156,26 +159,54 @@ def get_new_arrivals(tab="cd", limit=50):
             page.wait_for_load_state("domcontentloaded", timeout=60000)
             page.wait_for_timeout(5000)
 
-            # タブをクリック（タイムアウト延長・リトライ付き）
+            # タブをクリック
             selector = tab_selector.get(tab, tab_selector["cd"])
             print(f"  {tab.upper()}タブをクリック...")
-
-            # セレクタが見つかるまで待機
             page.wait_for_selector(selector, state="visible", timeout=60000)
             page.click(selector, timeout=60000)
-
-            # タブ切り替え後の読み込み待機
             page.wait_for_timeout(5000)
 
-            # HTMLを取得
-            html = page.content()
+            # 無限スクロールで商品IDを収集
+            all_product_ids = []
+            last_count = 0
+            scroll_count = 0
+
+            while scroll_count < max_scrolls:
+                # HTMLから商品IDを抽出（詳細ページは見ない）
+                html = page.content()
+                product_ids = re.findall(r'href="/used/(\d+)"', html)
+                all_product_ids = list(dict.fromkeys(product_ids))
+
+                print(f"  スクロール {scroll_count + 1}: {len(all_product_ids)}件")
+
+                # 未処理件数をチェック（メモリ内で済む）
+                if seen_products:
+                    unseen_count = sum(1 for pid in all_product_ids if pid not in seen_products)
+                    print(f"    → 未処理: {unseen_count}件")
+                    if unseen_count >= min_unseen:
+                        print(f"  未処理 {unseen_count}件発見、スクロール終了")
+                        break
+
+                # 上限到達
+                if len(all_product_ids) >= limit:
+                    break
+
+                # 新しい商品が読み込まれなくなったら終了
+                if len(all_product_ids) == last_count:
+                    print(f"  これ以上読み込めない、スクロール終了")
+                    break
+
+                last_count = len(all_product_ids)
+
+                # 下にスクロール
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(3000)
+                scroll_count += 1
+
             browser.close()
 
-        # 商品IDを抽出
-        product_ids = re.findall(r'href="/used/(\d+)"', html)
-        unique_ids = list(dict.fromkeys(product_ids))
-        print(f"  新着取得完了: {len(unique_ids)}件")
-        return unique_ids[:limit]
+        print(f"  新着取得完了: {len(all_product_ids)}件")
+        return all_product_ids[:limit]
 
     except Exception as e:
         print(f"  エラー: 新着取得失敗 - {e}")
@@ -453,7 +484,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
         # 商品ID取得
         if use_new_arrivals:
-            product_ids = get_new_arrivals(tab=cat_name, limit=limit_per_category)
+            product_ids = get_new_arrivals(tab=cat_name, limit=limit_per_category, seen_products=seen_products)
         else:
             cat_url = CATEGORIES[cat_name]
             product_ids = get_product_ids(cat_url, limit=limit_per_category)
