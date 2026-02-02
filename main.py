@@ -112,17 +112,61 @@ def is_garbage_jan(jan, cache):
     return False, None
 
 
-def get_product_ids(category_url, limit=50):
-    """カテゴリページから商品IDを取得"""
-    try:
-        r = requests.get(category_url, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-        product_ids = re.findall(r'href="/used/(\d+)"', r.text)
-        unique_ids = list(dict.fromkeys(product_ids))
-        return unique_ids[:limit]
-    except Exception as e:
-        print(f"  エラー: カテゴリ取得失敗 - {e}")
-        return []
+def get_product_ids(category_url, limit=50, seen_products=None, min_unseen=10):
+    """カテゴリページから商品IDを取得（ページネーション対応）
+
+    Args:
+        category_url: カテゴリURL
+        limit: 取得上限
+        seen_products: 処理済み商品IDのset（指定すると未処理が見つかるまでページング）
+        min_unseen: 最低限見つけたい未処理件数
+    """
+    all_product_ids = []
+    page = 1
+    max_pages = 20  # 最大ページ数
+
+    while page <= max_pages:
+        try:
+            # ページパラメータ付きURL
+            url = f"{category_url}?page={page}"
+            print(f"  カテゴリページ {page}: {url}")
+
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            product_ids = re.findall(r'href="/used/(\d+)"', r.text)
+
+            # 重複除去して追加
+            for pid in product_ids:
+                if pid not in all_product_ids:
+                    all_product_ids.append(pid)
+
+            print(f"    → 累計: {len(all_product_ids)}件")
+
+            # 未処理件数をチェック
+            if seen_products:
+                unseen_count = sum(1 for pid in all_product_ids if pid not in seen_products)
+                print(f"    → 未処理: {unseen_count}件")
+                if unseen_count >= min_unseen:
+                    print(f"  未処理 {unseen_count}件発見、ページング終了")
+                    break
+
+            # 上限到達
+            if len(all_product_ids) >= limit:
+                break
+
+            # このページに商品がなければ終了
+            if not product_ids:
+                print(f"  これ以上ページがない、終了")
+                break
+
+            page += 1
+            time.sleep(1)  # レート制限対策
+
+        except Exception as e:
+            print(f"  エラー: カテゴリ取得失敗 (page {page}) - {e}")
+            break
+
+    return all_product_ids[:limit]
 
 
 def get_new_arrivals(tab="cd", limit=50, seen_products=None):
@@ -487,7 +531,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
             product_ids = get_new_arrivals(tab=cat_name, limit=limit_per_category, seen_products=seen_products)
         else:
             cat_url = CATEGORIES[cat_name]
-            product_ids = get_product_ids(cat_url, limit=limit_per_category)
+            product_ids = get_product_ids(cat_url, limit=limit_per_category, seen_products=seen_products, min_unseen=10)
         print(f"商品数: {len(product_ids)}")
 
         # 差分チェック: 新着確認 → なければ続きを処理
@@ -518,8 +562,16 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
             new_product_ids = continue_from_last
             frontier_stops += 1
         else:
-            print(f"全て処理済み")
-            new_product_ids = []
+            # 新着ページが枯れた → カテゴリ検索にフォールバック
+            if use_new_arrivals and cat_name in CATEGORIES:
+                print(f"新着枯渇 → カテゴリ検索にフォールバック")
+                cat_url = CATEGORIES[cat_name]
+                fallback_ids = get_product_ids(cat_url, limit=limit_per_category, seen_products=seen_products, min_unseen=10)
+                new_product_ids = [pid for pid in fallback_ids if pid not in seen_products]
+                print(f"カテゴリ検索から未処理: {len(new_product_ids)}件")
+            else:
+                print(f"全て処理済み")
+                new_product_ids = []
             frontier_stops += 1
 
         # 今回の先頭10件をフロンティアとして保存
