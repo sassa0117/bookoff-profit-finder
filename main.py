@@ -441,7 +441,8 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     print(f"モード: {mode_str}")
     print(f"対象地域: {target_prefecture}")
     print(f"カテゴリ: {', '.join(categories)}")
-    print(f"各カテゴリ上限: {limit_per_category}件\n")
+    print(f"各カテゴリ上限: {limit_per_category}件")
+    print(f"[DEBUG] 処理済み読込: {len(seen_products)}件, frontier: {list(frontier.keys())}\n")
 
     for cat_name in categories:
         if not use_new_arrivals and cat_name not in CATEGORIES:
