@@ -280,16 +280,19 @@ def get_keepa_data(jan_code):
 
 
 def send_discord_notification(webhook_url, results):
-    """Discord Webhookで利益商品を通知"""
+    """Discord Webhookで利益商品・Amazon未登録商品を通知"""
     if not webhook_url or not results:
         return
 
+    # 利益あり + Amazon未登録を通知対象に
     profit_items = [r for r in results if r.get('status') == '利益あり']
-    if not profit_items:
-        print("利益商品なし、通知スキップ")
+    unregistered_items = [r for r in results if r.get('status') == 'Amazon未登録']
+
+    if not profit_items and not unregistered_items:
+        print("通知対象なし、スキップ")
         return
 
-    # メッセージ作成
+    # 利益商品の通知
     embeds = []
     for item in profit_items[:5]:  # 最大5件
         embed = {
@@ -309,9 +312,32 @@ def send_discord_notification(webhook_url, results):
             embed["fields"].append({"name": "Keepa", "value": f"[グラフを見る]({item['keepa_url']})", "inline": False})
         embeds.append(embed)
 
+    # Amazon未登録商品の通知
+    for item in unregistered_items[:5]:  # 最大5件
+        embed = {
+            "title": f"📦 {item.get('title', '不明')[:100]}",
+            "url": item.get('url', ''),
+            "color": 0xffaa00,  # オレンジ
+            "fields": [
+                {"name": "ブックオフ", "value": f"{item.get('price', 0):,}円", "inline": True},
+                {"name": "ステータス", "value": "Amazon未登録", "inline": True},
+                {"name": "在庫ランク", "value": item.get('stock_rank', '-'), "inline": True},
+                {"name": "全国在庫", "value": f"{item.get('total_stock', 0)}店舗", "inline": True},
+                {"name": "秋田店舗", "value": item.get('local_stores', '-')[:100], "inline": False},
+            ]
+        }
+        embeds.append(embed)
+
+    # メッセージ作成
+    content_parts = []
+    if profit_items:
+        content_parts.append(f"🎯 利益商品: {len(profit_items)}件")
+    if unregistered_items:
+        content_parts.append(f"📦 Amazon未登録: {len(unregistered_items)}件")
+
     payload = {
-        "content": f"🎯 **利益商品発見！** ({len(profit_items)}件)",
-        "embeds": embeds
+        "content": f"**発見！** {' / '.join(content_parts)}",
+        "embeds": embeds[:10]  # Discord制限: 最大10embeds
     }
 
     try:
