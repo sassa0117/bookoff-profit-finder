@@ -24,16 +24,6 @@ jobs:
           pip install requests playwright
           playwright install chromium
 
-      - name: Restore caches
-        uses: actions/cache@v4
-        with:
-          path: |
-            price_cache.json
-            seen_products.json
-          key: bookoff-caches-${{ github.run_id }}
-          restore-keys: |
-            bookoff-caches-
-
       - name: Run Finder (CD New Arrivals)
         env:
           KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
@@ -48,13 +38,13 @@ jobs:
         run: |
           python main.py --new --categories dvd
 
-      - name: Save caches
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            price_cache.json
-            seen_products.json
-          key: bookoff-caches-${{ github.run_id }}
+      - name: Commit cache files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add price_cache.json seen_products.json || true
+          git diff --staged --quiet || git commit -m "Update cache files [skip ci]"
+          git push || true
 
       - name: Upload results
         uses: actions/upload-artifact@v4
