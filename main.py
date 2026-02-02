@@ -120,7 +120,7 @@ def get_new_arrivals(tab="cd", limit=50):
     # タブのセレクタ
     tab_selector = {
         "cd": 'a[href="#tabCD"]',
-        "dvd": 'a[href="#tabDVD"]',
+        "dvd": 'a[href="#tabMovie"]',
         "game": 'a[href="#tabGAME"]',
         "book": 'a[href="#tabBOOK"]',
         "comic": 'a[href="#tabCOMIC"]',
@@ -136,8 +136,8 @@ def get_new_arrivals(tab="cd", limit=50):
             page.goto(url, timeout=90000)
 
             # ページ読み込み完了待機
-            page.wait_for_load_state("networkidle", timeout=30000)
-            page.wait_for_timeout(3000)
+            page.wait_for_load_state("domcontentloaded", timeout=60000)
+            page.wait_for_timeout(5000)
 
             # タブをクリック（タイムアウト延長・リトライ付き）
             selector = tab_selector.get(tab, tab_selector["cd"])
