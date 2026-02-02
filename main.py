@@ -133,18 +133,22 @@ def get_new_arrivals(tab="cd", limit=50):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(url, timeout=60000)
+            page.goto(url, timeout=90000)
 
-            # ページ読み込み待機
-            page.wait_for_timeout(2000)
+            # ページ読み込み完了待機
+            page.wait_for_load_state("networkidle", timeout=30000)
+            page.wait_for_timeout(3000)
 
-            # タブをクリック
+            # タブをクリック（タイムアウト延長・リトライ付き）
             selector = tab_selector.get(tab, tab_selector["cd"])
             print(f"  {tab.upper()}タブをクリック...")
-            page.click(selector)
+
+            # セレクタが見つかるまで待機
+            page.wait_for_selector(selector, state="visible", timeout=60000)
+            page.click(selector, timeout=60000)
 
             # タブ切り替え後の読み込み待機
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(5000)
 
             # HTMLを取得
             html = page.content()
