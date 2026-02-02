@@ -70,20 +70,37 @@ def save_price_cache(cache):
 
 
 def load_seen_products():
-    """処理済み商品IDを読み込む"""
+    """処理済み商品データを読み込む
+
+    Returns:
+        dict: {
+            'all': set(全処理済みID),
+            'frontier': {category: [先頭10件のID]}
+        }
+    """
     if os.path.exists(SEEN_FILE):
         try:
             with open(SEEN_FILE, 'r', encoding='utf-8') as f:
-                return set(json.load(f))
+                data = json.load(f)
+                # 旧形式（リスト）との互換性
+                if isinstance(data, list):
+                    return {'all': set(data), 'frontier': {}}
+                return {
+                    'all': set(data.get('all', [])),
+                    'frontier': data.get('frontier', {})
+                }
         except:
-            return set()
-    return set()
+            return {'all': set(), 'frontier': {}}
+    return {'all': set(), 'frontier': {}}
 
 
-def save_seen_products(seen):
-    """処理済み商品IDを保存"""
+def save_seen_products(seen_data):
+    """処理済み商品データを保存"""
     with open(SEEN_FILE, 'w', encoding='utf-8') as f:
-        json.dump(list(seen), f)
+        json.dump({
+            'all': list(seen_data['all']),
+            'frontier': seen_data['frontier']
+        }, f)
 
 
 def is_garbage_jan(jan, cache):
@@ -412,9 +429,12 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     results = []
     tokens_left = 300
     price_cache = load_price_cache()
-    seen_products = load_seen_products()
+    seen_data = load_seen_products()
+    seen_products = seen_data['all']
+    frontier = seen_data['frontier']
     cache_hits = 0
     seen_skips = 0
+    frontier_stops = 0
 
     mode_str = "新着" if use_new_arrivals else "カテゴリ"
     print(f"=== ブックオフ利益商品ファインダー ===")
@@ -438,11 +458,24 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
             product_ids = get_product_ids(cat_url, limit=limit_per_category)
         print(f"商品数: {len(product_ids)}")
 
-        # 処理済み商品を除外
-        new_product_ids = [pid for pid in product_ids if pid not in seen_products]
-        if len(product_ids) != len(new_product_ids):
-            print(f"処理済みスキップ: {len(product_ids) - len(new_product_ids)}件")
-            seen_skips += len(product_ids) - len(new_product_ids)
+        # 差分チェック: 前回の先頭IDに到達したら停止
+        cat_frontier = frontier.get(cat_name, [])
+        new_product_ids = []
+        for pid in product_ids:
+            if pid in cat_frontier:
+                print(f"→ 前回チェック済み地点に到達、以降スキップ")
+                frontier_stops += 1
+                break
+            if pid not in seen_products:
+                new_product_ids.append(pid)
+            else:
+                seen_skips += 1
+
+        if not new_product_ids and product_ids:
+            print(f"新着なし（全て処理済み）")
+
+        # 今回の先頭10件をフロンティアとして保存
+        frontier[cat_name] = product_ids[:10]
 
         for i, pid in enumerate(new_product_ids):
             print(f"\n[{i+1}/{len(new_product_ids)}] 商品ID: {pid}")
@@ -592,13 +625,14 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
     # キャッシュ保存
     save_price_cache(price_cache)
-    save_seen_products(seen_products)
+    save_seen_products({'all': seen_products, 'frontier': frontier})
 
     # サマリー
     profit_items = [r for r in results if r['status'] == '利益あり']
     print(f"\n{target_prefecture}在庫あり: {len(results)}件")
     print(f"利益あり: {len(profit_items)}件")
     print(f"残りトークン: {tokens_left}")
+    print(f"差分チェック停止: {frontier_stops}回")
     print(f"処理済みスキップ: {seen_skips}件")
     print(f"キャッシュヒット: {cache_hits}件（トークン節約）")
     print(f"キャッシュ総数: {len(price_cache)}件")
