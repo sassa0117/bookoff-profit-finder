@@ -459,21 +459,37 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
             product_ids = get_product_ids(cat_url, limit=limit_per_category)
         print(f"商品数: {len(product_ids)}")
 
-        # 差分チェック: 前回の先頭IDに到達したら停止
+        # 差分チェック: 新着確認 → なければ続きを処理
         cat_frontier = frontier.get(cat_name, [])
-        new_product_ids = []
+        new_at_top = []  # 前回より上に追加された新着
+        continue_from_last = []  # 前回の続き（未処理分）
+
+        frontier_hit = False
         for pid in product_ids:
             if pid in cat_frontier:
-                print(f"→ 前回チェック済み地点に到達、以降スキップ")
-                frontier_stops += 1
-                break
+                frontier_hit = True
+                continue  # frontierに到達しても止まらず続行
+
             if pid not in seen_products:
-                new_product_ids.append(pid)
+                if not frontier_hit:
+                    new_at_top.append(pid)
+                else:
+                    continue_from_last.append(pid)
             else:
                 seen_skips += 1
 
-        if not new_product_ids and product_ids:
-            print(f"新着なし（全て処理済み）")
+        # 新着があれば新着を処理、なければ続きを処理
+        if new_at_top:
+            print(f"新着発見: {len(new_at_top)}件")
+            new_product_ids = new_at_top
+        elif continue_from_last:
+            print(f"新着なし → 続きから処理: {len(continue_from_last)}件")
+            new_product_ids = continue_from_last
+            frontier_stops += 1
+        else:
+            print(f"全て処理済み")
+            new_product_ids = []
+            frontier_stops += 1
 
         # 今回の先頭10件をフロンティアとして保存
         frontier[cat_name] = product_ids[:10]
