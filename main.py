@@ -15,6 +15,7 @@ import csv
 import os
 import json
 from datetime import datetime
+import exclusion_db
 
 # 設定（環境変数優先）
 KEEPA_API_KEY = os.environ.get("KEEPA_API_KEY", "1b2vuq9vbv5ejbagprfksl7ra5phbhlv3ngd65rp6gal6tu74uujvd5n2e5ate4a")
@@ -40,9 +41,7 @@ SEEN_FILE = os.path.join(os.path.dirname(__file__), "seen_products.json")
 MIN_AMAZON_PRICE = 500  # この価格以下はゴミ扱い（円）
 KEEPA_DELAY = 3  # Keepa API呼び出し間隔（秒）
 
-# 除外リスト（GAS API）
-# GASウェブアプリのURL（JSON形式で除外JAN・キーワードを返す）
-EXCLUDE_SHEET_URL = os.environ.get("EXCLUDE_SHEET_URL", "")
+# 除外リスト（SQLite）- exclusion_db.pyで管理
 
 # 都道府県リスト
 PREFECTURES = [
@@ -107,53 +106,8 @@ def save_seen_products(seen_data):
         }, f)
 
 
-def load_exclude_list():
-    """GAS API から除外リストを取得
-
-    Returns:
-        dict: {'jan': set(), 'keywords': list()}
-    """
-    if not EXCLUDE_SHEET_URL:
-        return {'jan': set(), 'keywords': []}
-
-    try:
-        print(f"除外リスト取得中...")
-        r = requests.get(EXCLUDE_SHEET_URL, timeout=15)
-        r.raise_for_status()
-
-        data = r.json()
-        exclude_jan = set(data.get('jan', []))
-        exclude_keywords = data.get('keywords', [])
-
-        print(f"  除外JAN: {len(exclude_jan)}件, 除外キーワード: {len(exclude_keywords)}件")
-        return {'jan': exclude_jan, 'keywords': exclude_keywords}
-
-    except Exception as e:
-        print(f"除外リスト取得エラー: {e}")
-        return {'jan': set(), 'keywords': []}
 
 
-def is_excluded(product, exclude_list):
-    """商品が除外対象かチェック
-
-    Args:
-        product: 商品情報 {'jan': ..., 'title': ...}
-        exclude_list: {'jan': set(), 'keywords': list()}
-
-    Returns:
-        tuple: (除外対象か, 理由)
-    """
-    # JAN除外
-    if product.get('jan') and product['jan'] in exclude_list['jan']:
-        return True, f"除外JAN: {product['jan']}"
-
-    # キーワード除外
-    title = product.get('title', '')
-    for kw in exclude_list['keywords']:
-        if kw in title:
-            return True, f"除外キーワード: {kw}"
-
-    return False, None
 
 
 def is_garbage_jan(jan, cache):
@@ -570,14 +524,16 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     seen_data = load_seen_products()
     seen_products = seen_data['all']
     frontier = seen_data['frontier']
-    exclude_list = load_exclude_list()  # 除外リスト読み込み
     cache_hits = 0
     seen_skips = 0
     frontier_stops = 0
     exclude_skips = 0  # 除外スキップ数
+    auto_excluded = 0  # 自動除外追加数
 
-    mode_str = "新着" if use_new_arrivals else "カテゴリ"
+    # 除外リスト統計
+    exclude_stats = exclusion_db.get_stats()
     print(f"=== ブックオフ利益商品ファインダー ===")
+    print(f"除外DB: JAN {exclude_stats['jan']}件, キーワード {exclude_stats['keywords']}件, 商品ID {exclude_stats['products']}件")
     print(f"モード: {mode_str}")
     print(f"対象地域: {target_prefecture}")
     print(f"カテゴリ: {', '.join(categories)}")
@@ -655,7 +611,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
             print(f"  ブックオフ: {product['price']:,}円")
 
             # 除外リストチェック
-            excluded, reason = is_excluded(product, exclude_list)
+            excluded, reason = exclusion_db.is_excluded(product)
             if excluded:
                 print(f"  → {reason}、スキップ")
                 exclude_skips += 1
@@ -740,6 +696,17 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 'updated': datetime.now().strftime("%Y-%m-%d")
             }
 
+            # ゴミ価格は除外DBに追加してスキップ
+            if keepa['used_price'] and keepa['used_price'] <= MIN_AMAZON_PRICE:
+                print(f"  → ゴミ価格（Amazon {keepa['used_price']}円）、除外DBに追加してスキップ")
+                exclusion_db.add_excluded_jan(
+                    product['jan'],
+                    reason=f"ゴミ価格（Amazon {keepa['used_price']}円）",
+                    amazon_price=keepa['used_price']
+                )
+                auto_excluded += 1
+                continue
+
             # 価格表示（現在価格とavg90両方）
             if keepa['avg90_used']:
                 print(f"  Amazon中古(90日平均): {keepa['avg90_used']:,}円")
@@ -764,6 +731,15 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 status = "薄利"
             elif profit is not None:
                 status = "赤字"
+                # 赤字商品は除外DBに自動追加
+                if product.get('jan'):
+                    exclusion_db.add_excluded_jan(
+                        product['jan'],
+                        reason=f"赤字（Amazon {keepa['used_price']}円）",
+                        amazon_price=keepa['used_price']
+                    )
+                    auto_excluded += 1
+                    print(f"  → 除外DBに追加")
             else:
                 status = "価格不明"
 
@@ -807,6 +783,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     print(f"差分チェック停止: {frontier_stops}回")
     print(f"処理済みスキップ: {seen_skips}件")
     print(f"除外リストスキップ: {exclude_skips}件")
+    print(f"自動除外追加: {auto_excluded}件")
     print(f"キャッシュヒット: {cache_hits}件（トークン節約）")
     print(f"キャッシュ総数: {len(price_cache)}件")
     print(f"処理済み総数: {len(seen_products)}件")
