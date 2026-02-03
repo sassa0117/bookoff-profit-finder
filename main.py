@@ -40,6 +40,10 @@ SEEN_FILE = os.path.join(os.path.dirname(__file__), "seen_products.json")
 MIN_AMAZON_PRICE = 500  # この価格以下はゴミ扱い（円）
 KEEPA_DELAY = 3  # Keepa API呼び出し間隔（秒）
 
+# 除外リスト（GAS API）
+# GASウェブアプリのURL（JSON形式で除外JAN・キーワードを返す）
+EXCLUDE_SHEET_URL = os.environ.get("EXCLUDE_SHEET_URL", "")
+
 # 都道府県リスト
 PREFECTURES = [
     '北海道', '青森県', '岩手県', '宮城県', '秋田県', '山形県', '福島県',
@@ -101,6 +105,55 @@ def save_seen_products(seen_data):
             'all': list(seen_data['all']),
             'frontier': seen_data['frontier']
         }, f)
+
+
+def load_exclude_list():
+    """GAS API から除外リストを取得
+
+    Returns:
+        dict: {'jan': set(), 'keywords': list()}
+    """
+    if not EXCLUDE_SHEET_URL:
+        return {'jan': set(), 'keywords': []}
+
+    try:
+        print(f"除外リスト取得中...")
+        r = requests.get(EXCLUDE_SHEET_URL, timeout=15)
+        r.raise_for_status()
+
+        data = r.json()
+        exclude_jan = set(data.get('jan', []))
+        exclude_keywords = data.get('keywords', [])
+
+        print(f"  除外JAN: {len(exclude_jan)}件, 除外キーワード: {len(exclude_keywords)}件")
+        return {'jan': exclude_jan, 'keywords': exclude_keywords}
+
+    except Exception as e:
+        print(f"除外リスト取得エラー: {e}")
+        return {'jan': set(), 'keywords': []}
+
+
+def is_excluded(product, exclude_list):
+    """商品が除外対象かチェック
+
+    Args:
+        product: 商品情報 {'jan': ..., 'title': ...}
+        exclude_list: {'jan': set(), 'keywords': list()}
+
+    Returns:
+        tuple: (除外対象か, 理由)
+    """
+    # JAN除外
+    if product.get('jan') and product['jan'] in exclude_list['jan']:
+        return True, f"除外JAN: {product['jan']}"
+
+    # キーワード除外
+    title = product.get('title', '')
+    for kw in exclude_list['keywords']:
+        if kw in title:
+            return True, f"除外キーワード: {kw}"
+
+    return False, None
 
 
 def is_garbage_jan(jan, cache):
@@ -517,9 +570,11 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     seen_data = load_seen_products()
     seen_products = seen_data['all']
     frontier = seen_data['frontier']
+    exclude_list = load_exclude_list()  # 除外リスト読み込み
     cache_hits = 0
     seen_skips = 0
     frontier_stops = 0
+    exclude_skips = 0  # 除外スキップ数
 
     mode_str = "新着" if use_new_arrivals else "カテゴリ"
     print(f"=== ブックオフ利益商品ファインダー ===")
@@ -598,6 +653,13 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
             print(f"  {product['title'][:40]}...")
             print(f"  ブックオフ: {product['price']:,}円")
+
+            # 除外リストチェック
+            excluded, reason = is_excluded(product, exclude_list)
+            if excluded:
+                print(f"  → {reason}、スキップ")
+                exclude_skips += 1
+                continue
 
             # 店舗在庫チェック
             total_stock, local_stores = get_store_stock(product['html'], target_prefecture)
@@ -744,6 +806,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     print(f"残りトークン: {tokens_left}")
     print(f"差分チェック停止: {frontier_stops}回")
     print(f"処理済みスキップ: {seen_skips}件")
+    print(f"除外リストスキップ: {exclude_skips}件")
     print(f"キャッシュヒット: {cache_hits}件（トークン節約）")
     print(f"キャッシュ総数: {len(price_cache)}件")
     print(f"処理済み総数: {len(seen_products)}件")
@@ -753,7 +816,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     if webhook_url:
         stats = {
             'checked': len(results),
-            'skipped': seen_skips + cache_hits
+            'skipped': seen_skips + cache_hits + exclude_skips
         }
         send_discord_notification(webhook_url, results, stats)
 
