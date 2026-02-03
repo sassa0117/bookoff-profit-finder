@@ -530,6 +530,8 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     exclude_skips = 0  # 除外スキップ数
     auto_excluded = 0  # 自動除外追加数
 
+    mode_str = "新着" if use_new_arrivals else "カテゴリ"
+
     # 除外リスト統計
     exclude_stats = exclusion_db.get_stats()
     print(f"=== ブックオフ利益商品ファインダー ===")
