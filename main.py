@@ -210,25 +210,25 @@ def get_new_arrivals(tab="cd", limit=50, seen_products=None):
             page.click(selector, timeout=60000)
             page.wait_for_timeout(5000)
 
-            # 無限スクロールで商品IDを収集
+            # 「もっとみる」ボタンで商品を読み込む
             all_product_ids = []
             last_count = 0
-            scroll_count = 0
+            click_count = 0
 
-            while scroll_count < max_scrolls:
-                # HTMLから商品IDを抽出（詳細ページは見ない）
+            while click_count < max_scrolls:
+                # HTMLから商品IDを抽出
                 html = page.content()
                 product_ids = re.findall(r'href="/used/(\d+)"', html)
                 all_product_ids = list(dict.fromkeys(product_ids))
 
-                print(f"  スクロール {scroll_count + 1}: {len(all_product_ids)}件")
+                print(f"  ページ {click_count + 1}: {len(all_product_ids)}件")
 
-                # 未処理件数をチェック（メモリ内で済む）
+                # 未処理件数をチェック
                 if seen_products:
                     unseen_count = sum(1 for pid in all_product_ids if pid not in seen_products)
                     print(f"    → 未処理: {unseen_count}件")
                     if unseen_count >= min_unseen:
-                        print(f"  未処理 {unseen_count}件発見、スクロール終了")
+                        print(f"  未処理 {unseen_count}件発見、読み込み終了")
                         break
 
                 # 上限到達
@@ -236,16 +236,26 @@ def get_new_arrivals(tab="cd", limit=50, seen_products=None):
                     break
 
                 # 新しい商品が読み込まれなくなったら終了
-                if len(all_product_ids) == last_count:
-                    print(f"  これ以上読み込めない、スクロール終了")
+                if len(all_product_ids) == last_count and click_count > 0:
+                    print(f"  これ以上読み込めない、終了")
                     break
 
                 last_count = len(all_product_ids)
 
-                # 下にスクロール
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(3000)
-                scroll_count += 1
+                # 「もっとみる」ボタンをクリック
+                try:
+                    more_button = page.locator('text=もっとみる').first
+                    if more_button.is_visible():
+                        print(f"  「もっとみる」クリック...")
+                        more_button.click()
+                        page.wait_for_timeout(3000)
+                        click_count += 1
+                    else:
+                        print(f"  「もっとみる」ボタンなし、終了")
+                        break
+                except Exception as e:
+                    print(f"  「もっとみる」クリック失敗: {e}")
+                    break
 
             browser.close()
 
