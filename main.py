@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ブックオフ利益商品ファインダー（秋田県フィルター付き）
-- ブックオフの新着/カテゴリ商品をスクレイピング
-- Keepa APIでAmazon相場を取得
-- 秋田県の店舗で受取可能なものだけ抽出
+ブックオフ利益商品ファインダー
+- ブックオフのカテゴリ商品をページ単位でスクレイピング
+- Keepa APIでAmazon相場を取得（全国在庫5店舗以下のみ）
+- 利益商品を全国表示（秋田フラグ付き）
 """
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
@@ -14,8 +14,11 @@ import time
 import csv
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import exclusion_db
+
+# 日本時間
+JST = timezone(timedelta(hours=9))
 
 # 設定（環境変数優先）
 KEEPA_API_KEY = os.environ.get("KEEPA_API_KEY", "1b2vuq9vbv5ejbagprfksl7ra5phbhlv3ngd65rp6gal6tu74uujvd5n2e5ate4a")
@@ -78,23 +81,27 @@ def load_seen_products():
     Returns:
         dict: {
             'all': set(全処理済みID),
-            'frontier': {category: [先頭10件のID]}
+            'last_page': {category: 最後に処理したページ番号},
+            'last_reset': 最後にリセットした日付 (YYYY-MM-DD)
         }
     """
     if os.path.exists(SEEN_FILE):
         try:
             with open(SEEN_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # 旧形式（リスト）との互換性
+                # 旧形式との互換性
                 if isinstance(data, list):
-                    return {'all': set(data), 'frontier': {}}
+                    return {'all': set(data), 'last_page': {}, 'last_reset': None}
+                if 'frontier' in data:  # 旧frontier形式
+                    return {'all': set(data.get('all', [])), 'last_page': {}, 'last_reset': None}
                 return {
                     'all': set(data.get('all', [])),
-                    'frontier': data.get('frontier', {})
+                    'last_page': data.get('last_page', {}),
+                    'last_reset': data.get('last_reset')
                 }
         except:
-            return {'all': set(), 'frontier': {}}
-    return {'all': set(), 'frontier': {}}
+            return {'all': set(), 'last_page': {}, 'last_reset': None}
+    return {'all': set(), 'last_page': {}, 'last_reset': None}
 
 
 def save_seen_products(seen_data):
@@ -102,8 +109,20 @@ def save_seen_products(seen_data):
     with open(SEEN_FILE, 'w', encoding='utf-8') as f:
         json.dump({
             'all': list(seen_data['all']),
-            'frontier': seen_data['frontier']
+            'last_page': seen_data['last_page'],
+            'last_reset': seen_data['last_reset']
         }, f)
+
+
+def should_reset_daily(seen_data):
+    """9時リセットが必要かチェック（日本時間9時以降、当日未リセットなら）"""
+    now_jst = datetime.now(JST)
+    today_str = now_jst.strftime("%Y-%m-%d")
+
+    # 9時以降かつ、当日まだリセットしていない場合
+    if now_jst.hour >= 9 and seen_data.get('last_reset') != today_str:
+        return True, today_str
+    return False, today_str
 
 
 
@@ -119,61 +138,59 @@ def is_garbage_jan(jan, cache):
     return False, None
 
 
-def get_product_ids(category_url, limit=50, seen_products=None, min_unseen=10):
-    """カテゴリページから商品IDを取得（ページネーション対応）
+def get_product_ids_by_page(category_url, start_page=1, max_pages=50, seen_products=None):
+    """カテゴリページから商品IDをページ単位で取得
 
     Args:
         category_url: カテゴリURL
-        limit: 取得上限
-        seen_products: 処理済み商品IDのset（指定すると未処理が見つかるまでページング）
-        min_unseen: 最低限見つけたい未処理件数
+        start_page: 開始ページ番号
+        max_pages: 最大処理ページ数
+        seen_products: 処理済み商品IDのset
+
+    Returns:
+        tuple: (商品IDリスト, 最終ページ番号, 追いついたかフラグ)
     """
     all_product_ids = []
-    page = 1
-    max_pages = 20  # 最大ページ数
+    page = start_page
+    end_page = start_page + max_pages - 1
+    caught_up = False
 
-    while page <= max_pages:
+    while page <= end_page:
         try:
-            # ページパラメータ付きURL
             url = f"{category_url}?page={page}"
-            print(f"  カテゴリページ {page}: {url}")
+            print(f"  ページ {page}: {url}")
 
             r = requests.get(url, headers=HEADERS, timeout=30)
             r.raise_for_status()
             product_ids = re.findall(r'href="/used/(\d+)"', r.text)
+
+            if not product_ids:
+                print(f"  → ページ終端、終了")
+                break
+
+            # このページの未処理をカウント
+            new_on_page = [pid for pid in product_ids if pid not in seen_products] if seen_products else product_ids
+
+            if seen_products and len(new_on_page) == 0:
+                print(f"  → このページは全て処理済み、追いつき完了")
+                caught_up = True
+                break
 
             # 重複除去して追加
             for pid in product_ids:
                 if pid not in all_product_ids:
                     all_product_ids.append(pid)
 
-            print(f"    → 累計: {len(all_product_ids)}件")
-
-            # 未処理件数をチェック
-            if seen_products:
-                unseen_count = sum(1 for pid in all_product_ids if pid not in seen_products)
-                print(f"    → 未処理: {unseen_count}件")
-                if unseen_count >= min_unseen:
-                    print(f"  未処理 {unseen_count}件発見、ページング終了")
-                    break
-
-            # 上限到達
-            if len(all_product_ids) >= limit:
-                break
-
-            # このページに商品がなければ終了
-            if not product_ids:
-                print(f"  これ以上ページがない、終了")
-                break
+            print(f"    → 取得: {len(product_ids)}件 (未処理: {len(new_on_page)}件)")
 
             page += 1
-            time.sleep(1)  # レート制限対策
+            time.sleep(1)
 
         except Exception as e:
-            print(f"  エラー: カテゴリ取得失敗 (page {page}) - {e}")
+            print(f"  エラー: ページ取得失敗 (page {page}) - {e}")
             break
 
-    return all_product_ids[:limit]
+    return all_product_ids, page - 1, caught_up
 
 
 def get_new_arrivals(tab="cd", limit=50, seen_products=None):
@@ -423,52 +440,57 @@ def send_discord_notification(webhook_url, results, stats=None):
     # 利益商品の通知
     embeds = []
     for item in profit_items[:5]:  # 最大5件
+        # 秋田フラグ
+        local_flag = "🏠" if item.get('has_local') else "🌐"
         embed = {
-            "title": item.get('title', '不明')[:100],
+            "title": f"{local_flag} {item.get('title', '不明')[:95]}",
             "url": item.get('url', ''),
-            "color": 0x00ff00,  # 緑
+            "color": 0x00ff00 if item.get('has_local') else 0x3498db,  # 秋田=緑、他=青
             "fields": [
                 {"name": "ブックオフ", "value": f"{item.get('price', 0):,}円", "inline": True},
                 {"name": "Amazon中古", "value": f"{item.get('amazon_used', 0) or 0:,}円", "inline": True},
                 {"name": "利益概算", "value": f"{item.get('profit', 0) or 0:,}円", "inline": True},
                 {"name": "在庫ランク", "value": item.get('stock_rank', '-'), "inline": True},
                 {"name": "全国在庫", "value": f"{item.get('total_stock', 0)}店舗", "inline": True},
-                {"name": "秋田店舗", "value": item.get('local_stores', '-')[:100], "inline": False},
             ]
         }
+        if item.get('local_stores'):
+            embed["fields"].append({"name": "秋田店舗", "value": item.get('local_stores', '-')[:100], "inline": False})
         if item.get('keepa_url'):
             embed["fields"].append({"name": "Keepa", "value": f"[グラフを見る]({item['keepa_url']})", "inline": False})
         embeds.append(embed)
 
-    # Amazon未登録商品の通知
-    for item in unregistered_items[:5]:  # 最大5件
+    # Amazon未登録商品の通知（秋田のみ）
+    for item in unregistered_items[:3]:  # 最大3件
+        if not item.get('has_local'):
+            continue
         embed = {
-            "title": f"📦 {item.get('title', '不明')[:100]}",
+            "title": f"📦 {item.get('title', '不明')[:95]}",
             "url": item.get('url', ''),
             "color": 0xffaa00,  # オレンジ
             "fields": [
                 {"name": "ブックオフ", "value": f"{item.get('price', 0):,}円", "inline": True},
                 {"name": "ステータス", "value": "Amazon未登録", "inline": True},
-                {"name": "在庫ランク", "value": item.get('stock_rank', '-'), "inline": True},
                 {"name": "全国在庫", "value": f"{item.get('total_stock', 0)}店舗", "inline": True},
-                {"name": "秋田店舗", "value": item.get('local_stores', '-')[:100], "inline": False},
             ]
         }
+        if item.get('local_stores'):
+            embed["fields"].append({"name": "秋田店舗", "value": item.get('local_stores', '-')[:100], "inline": False})
         embeds.append(embed)
 
     # サマリー作成
     stats = stats or {}
+    local_profits = [r for r in profit_items if r.get('has_local')]
+
     summary_parts = []
-    if stats.get('checked'):
-        summary_parts.append(f"チェック: {stats['checked']}件")
+    if stats.get('keepa_calls'):
+        summary_parts.append(f"Keepa: {stats['keepa_calls']}回")
     if stats.get('skipped'):
         summary_parts.append(f"スキップ: {stats['skipped']}件")
 
     content_parts = []
     if profit_items:
-        content_parts.append(f"🎯 利益商品: {len(profit_items)}件")
-    if unregistered_items:
-        content_parts.append(f"📦 Amazon未登録: {len(unregistered_items)}件")
+        content_parts.append(f"🎯 利益商品: {len(profit_items)}件（秋田: {len(local_profits)}件）")
 
     # メッセージ作成
     if content_parts:
@@ -504,105 +526,95 @@ def calculate_profit(bookoff_price, amazon_price):
     return profit
 
 
-def run_finder(categories=None, limit_per_category=20, output_file=None, target_prefecture="秋田県", use_new_arrivals=False, discord_webhook=None):
+def run_finder(categories=None, limit_per_category=20, output_file=None, target_prefecture="秋田県", use_new_arrivals=False, discord_webhook=None, max_pages_per_run=10, force_reset=False):
     """メイン処理
 
     Args:
-        use_new_arrivals: Trueなら新着ページから取得（Playwright使用）
-        discord_webhook: Discord Webhook URL（指定すると利益商品を通知）
+        categories: 処理するカテゴリリスト
+        limit_per_category: (互換性のため残す、現在未使用)
+        output_file: 出力ファイル名
+        target_prefecture: 優先表示する都道府県
+        use_new_arrivals: (互換性のため残す、カテゴリモードのみ使用)
+        discord_webhook: Discord Webhook URL
+        max_pages_per_run: 1回の実行で処理する最大ページ数
+        force_reset: Trueならページ1から強制リスタート
     """
     if categories is None:
         categories = ["dvd"]
 
     if output_file is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = f"profit_akita_{timestamp}.csv"
+        output_file = f"profit_{timestamp}.csv"
 
     results = []
     tokens_left = 300
     price_cache = load_price_cache()
     seen_data = load_seen_products()
     seen_products = seen_data['all']
-    frontier = seen_data['frontier']
+    last_page = seen_data.get('last_page', {})
+
     cache_hits = 0
     seen_skips = 0
-    frontier_stops = 0
-    exclude_skips = 0  # 除外スキップ数
-    auto_excluded = 0  # 自動除外追加数
+    caught_up_count = 0
+    exclude_skips = 0
+    auto_excluded = 0
+    stock_skips = 0  # 在庫多すぎスキップ
+    keepa_calls = 0  # Keepa API呼び出し回数
 
-    mode_str = "新着" if use_new_arrivals else "カテゴリ"
+    # 9時リセットチェック
+    need_reset, today_str = should_reset_daily(seen_data)
+    if force_reset or need_reset:
+        if need_reset:
+            print(f"★ 9時リセット実行（日本時間）")
+        else:
+            print(f"★ 強制リセット実行")
+        last_page = {}  # ページ番号リセット
+        seen_data['last_reset'] = today_str
 
     # 除外リスト統計
     exclude_stats = exclusion_db.get_stats()
     print(f"=== ブックオフ利益商品ファインダー ===")
     print(f"除外DB: JAN {exclude_stats['jan']}件, キーワード {exclude_stats['keywords']}件, 商品ID {exclude_stats['products']}件")
-    print(f"モード: {mode_str}")
-    print(f"対象地域: {target_prefecture}")
+    print(f"モード: カテゴリ（ページ継続）")
+    print(f"優先地域: {target_prefecture}")
     print(f"カテゴリ: {', '.join(categories)}")
-    print(f"各カテゴリ上限: {limit_per_category}件")
-    print(f"[DEBUG] 処理済み読込: {len(seen_products)}件, frontier: {list(frontier.keys())}\n")
+    print(f"1回あたり最大ページ: {max_pages_per_run}")
+    print(f"処理済み商品: {len(seen_products)}件")
+    print(f"前回ページ: {last_page}\n")
 
     for cat_name in categories:
-        if not use_new_arrivals and cat_name not in CATEGORIES:
+        if cat_name not in CATEGORIES:
             print(f"不明なカテゴリ: {cat_name}")
             continue
 
-        print(f"\n=== {cat_name.upper()} {'新着' if use_new_arrivals else 'カテゴリ'} ===")
+        cat_url = CATEGORIES[cat_name]
+        start_page = last_page.get(cat_name, 1)
 
-        # 商品ID取得
-        if use_new_arrivals:
-            product_ids = get_new_arrivals(tab=cat_name, limit=limit_per_category, seen_products=seen_products)
-        else:
-            cat_url = CATEGORIES[cat_name]
-            product_ids = get_product_ids(cat_url, limit=limit_per_category, seen_products=seen_products, min_unseen=10)
-        print(f"商品数: {len(product_ids)}")
+        print(f"\n=== {cat_name.upper()} カテゴリ（ページ{start_page}から） ===")
 
-        # 差分チェック: 新着確認 → なければ続きを処理
-        cat_frontier = frontier.get(cat_name, [])
-        new_at_top = []  # 前回より上に追加された新着
-        continue_from_last = []  # 前回の続き（未処理分）
+        # ページ単位で商品ID取得
+        product_ids, end_page, caught_up = get_product_ids_by_page(
+            cat_url,
+            start_page=start_page,
+            max_pages=max_pages_per_run,
+            seen_products=seen_products
+        )
 
-        frontier_hit = False
-        for pid in product_ids:
-            if pid in cat_frontier:
-                frontier_hit = True
-                continue  # frontierに到達しても止まらず続行
+        if caught_up:
+            caught_up_count += 1
+            print(f"前回処理地点に追いつき完了")
 
-            if pid not in seen_products:
-                if not frontier_hit:
-                    new_at_top.append(pid)
-                else:
-                    continue_from_last.append(pid)
-            else:
-                seen_skips += 1
+        # 次回開始ページを保存
+        last_page[cat_name] = end_page + 1 if not caught_up else 1
+        print(f"取得商品数: {len(product_ids)}件")
 
-        # 新着があれば新着を処理、なければ続きを処理
-        if new_at_top:
-            print(f"新着発見: {len(new_at_top)}件")
-            new_product_ids = new_at_top
-        elif continue_from_last:
-            print(f"新着なし → 続きから処理: {len(continue_from_last)}件")
-            new_product_ids = continue_from_last
-            frontier_stops += 1
-        else:
-            # 新着ページが枯れた → カテゴリ検索にフォールバック
-            if use_new_arrivals and cat_name in CATEGORIES:
-                print(f"新着枯渇 → カテゴリ検索にフォールバック")
-                cat_url = CATEGORIES[cat_name]
-                fallback_ids = get_product_ids(cat_url, limit=limit_per_category, seen_products=seen_products, min_unseen=10)
-                new_product_ids = [pid for pid in fallback_ids if pid not in seen_products]
-                print(f"カテゴリ検索から未処理: {len(new_product_ids)}件")
-            else:
-                print(f"全て処理済み")
-                new_product_ids = []
-            frontier_stops += 1
-
-        # 今回の先頭10件をフロンティアとして保存
-        frontier[cat_name] = product_ids[:10]
+        # 未処理のみ抽出
+        new_product_ids = [pid for pid in product_ids if pid not in seen_products]
+        print(f"未処理: {len(new_product_ids)}件")
 
         for i, pid in enumerate(new_product_ids):
             print(f"\n[{i+1}/{len(new_product_ids)}] 商品ID: {pid}")
-            seen_products.add(pid)  # 処理済みとしてマーク
+            seen_products.add(pid)
 
             # 商品詳細取得
             product = get_product_details(pid)
@@ -619,26 +631,33 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 exclude_skips += 1
                 continue
 
-            # 店舗在庫チェック
+            # 店舗在庫チェック（全国）
             total_stock, local_stores = get_store_stock(product['html'], target_prefecture)
 
-            if not local_stores:
-                print(f"  → {target_prefecture}在庫なし、スキップ")
-                continue
-
-            # 在庫ランク判定（30店舗以下のみ処理）
-            if total_stock <= 10:
-                stock_rank = "S"  # 希少
-            elif total_stock <= 30:
+            # 在庫ランク判定
+            if total_stock <= 5:
+                stock_rank = "S"  # 希少 → Keepa確認対象
+            elif total_stock <= 10:
                 stock_rank = "A"  # やや希少
+            elif total_stock <= 30:
+                stock_rank = "B"  # 普通
             else:
-                print(f"  → 全国在庫: {total_stock}店舗 → 大量在庫、スキップ")
-                continue
+                stock_rank = "C"  # 多い
 
             print(f"  → 全国在庫: {total_stock}店舗 [ランク{stock_rank}]")
-            print(f"  → {target_prefecture}: {len(local_stores)}店舗")
-            for store in local_stores:
-                print(f"     - {store['name']} ({store['city']})")
+
+            # 秋田フラグ
+            has_local = len(local_stores) > 0
+            if has_local:
+                print(f"  → {target_prefecture}: {len(local_stores)}店舗")
+                for store in local_stores[:3]:  # 最大3店舗表示
+                    print(f"     - {store['name']} ({store['city']})")
+
+            # ★★★ 全国在庫5以下のみKeepa API呼び出し ★★★
+            if total_stock > 5:
+                print(f"  → 在庫{total_stock}店舗 > 5、Keepaスキップ")
+                stock_skips += 1
+                continue
 
             # JANがない場合
             if not product['jan']:
@@ -652,7 +671,8 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                     "keepa_url": None,
                     "total_stock": total_stock,
                     "stock_rank": stock_rank,
-                    "local_stores": ", ".join([s['name'] for s in local_stores]),
+                    "has_local": has_local,
+                    "local_stores": ", ".join([s['name'] for s in local_stores]) if local_stores else "",
                     "status": "JANなし"
                 })
                 continue
@@ -669,9 +689,10 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 print("  → トークン不足、停止")
                 break
 
-            # Keepa API（レート制限対策で間隔を空ける）
+            # Keepa API
             time.sleep(KEEPA_DELAY)
             keepa = get_keepa_data(product['jan'])
+            keepa_calls += 1
 
             if not keepa:
                 print("  → Amazon未登録")
@@ -684,7 +705,8 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                     "keepa_url": None,
                     "total_stock": total_stock,
                     "stock_rank": stock_rank,
-                    "local_stores": ", ".join([s['name'] for s in local_stores]),
+                    "has_local": has_local,
+                    "local_stores": ", ".join([s['name'] for s in local_stores]) if local_stores else "",
                     "status": "Amazon未登録"
                 })
                 continue
@@ -709,7 +731,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 auto_excluded += 1
                 continue
 
-            # 価格表示（現在価格とavg90両方）
+            # 価格表示
             if keepa['avg90_used']:
                 print(f"  Amazon中古(90日平均): {keepa['avg90_used']:,}円")
             if keepa['current_used']:
@@ -722,7 +744,6 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
             if profit:
                 print(f"  利益概算: {profit:,}円")
 
-            # Keepaグラフ URL
             keepa_url = f"https://keepa.com/#!product/5-{keepa['asin']}" if keepa['asin'] else None
 
             # ステータス判定
@@ -733,7 +754,6 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 status = "薄利"
             elif profit is not None:
                 status = "赤字"
-                # 赤字商品は除外DBに自動追加
                 if product.get('jan'):
                     exclusion_db.add_excluded_jan(
                         product['jan'],
@@ -756,14 +776,15 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 "keepa_url": keepa_url,
                 "total_stock": total_stock,
                 "stock_rank": stock_rank,
-                "local_stores": ", ".join([s['name'] for s in local_stores]),
+                "has_local": has_local,
+                "local_stores": ", ".join([s['name'] for s in local_stores]) if local_stores else "",
                 "status": status
             })
 
     # CSV出力
     print(f"\n\n=== 結果出力: {output_file} ===")
 
-    fieldnames = ["stock_rank", "status", "title", "price", "amazon_used_avg90", "amazon_used_current", "profit", "rank", "total_stock", "local_stores", "url", "keepa_url", "jan", "asin", "id"]
+    fieldnames = ["stock_rank", "has_local", "status", "title", "price", "amazon_used_avg90", "amazon_used_current", "profit", "rank", "total_stock", "local_stores", "url", "keepa_url", "jan", "asin", "id"]
     with open(output_file, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
         writer.writeheader()
@@ -773,29 +794,34 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
         sorted_results = sorted(filtered, key=lambda x: x['profit'] if x['profit'] else -99999, reverse=True)
         writer.writerows(sorted_results)
 
-    # キャッシュ保存
+    # データ保存
     save_price_cache(price_cache)
-    save_seen_products({'all': seen_products, 'frontier': frontier})
+    seen_data['all'] = seen_products
+    seen_data['last_page'] = last_page
+    save_seen_products(seen_data)
 
     # サマリー
     profit_items = [r for r in results if r['status'] == '利益あり']
-    print(f"\n{target_prefecture}在庫あり: {len(results)}件")
-    print(f"利益あり: {len(profit_items)}件")
+    local_profits = [r for r in profit_items if r.get('has_local')]
+    print(f"\n=== サマリー ===")
+    print(f"Keepa API呼び出し: {keepa_calls}回")
+    print(f"在庫多スキップ（>5店舗）: {stock_skips}件")
+    print(f"利益あり: {len(profit_items)}件（うち{target_prefecture}: {len(local_profits)}件）")
     print(f"残りトークン: {tokens_left}")
-    print(f"差分チェック停止: {frontier_stops}回")
-    print(f"処理済みスキップ: {seen_skips}件")
-    print(f"除外リストスキップ: {exclude_skips}件")
+    print(f"追いつき完了: {caught_up_count}カテゴリ")
+    print(f"除外スキップ: {exclude_skips}件")
     print(f"自動除外追加: {auto_excluded}件")
-    print(f"キャッシュヒット: {cache_hits}件（トークン節約）")
-    print(f"キャッシュ総数: {len(price_cache)}件")
+    print(f"キャッシュヒット: {cache_hits}件")
     print(f"処理済み総数: {len(seen_products)}件")
+    print(f"次回開始ページ: {last_page}")
 
-    # Discord通知（結果あるなしに関わらず送信）
+    # Discord通知
     webhook_url = discord_webhook or os.environ.get("DISCORD_WEBHOOK_URL")
     if webhook_url:
         stats = {
             'checked': len(results),
-            'skipped': seen_skips + cache_hits + exclude_skips
+            'skipped': stock_skips + cache_hits + exclude_skips,
+            'keepa_calls': keepa_calls
         }
         send_discord_notification(webhook_url, results, stats)
 
@@ -804,13 +830,15 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="ブックオフ利益商品ファインダー（秋田県フィルター付き）")
-    parser.add_argument("--categories", nargs="+", default=["dvd"], help="カテゴリ (dvd, cd, game)")
-    parser.add_argument("--limit", type=int, default=200, help="カテゴリあたりの商品数")
+    parser = argparse.ArgumentParser(description="ブックオフ利益商品ファインダー")
+    parser.add_argument("--categories", nargs="+", default=["dvd"], help="カテゴリ (dvd, cd, game, comic, book)")
+    parser.add_argument("--limit", type=int, default=200, help="(互換性のため残す)")
     parser.add_argument("--output", type=str, help="出力ファイル名")
-    parser.add_argument("--prefecture", type=str, default="秋田県", help="対象都道府県")
-    parser.add_argument("--new", action="store_true", help="新着モード（Playwright使用）")
+    parser.add_argument("--prefecture", type=str, default="秋田県", help="優先表示する都道府県")
+    parser.add_argument("--new", action="store_true", help="(互換性のため残す、カテゴリモードのみ使用)")
     parser.add_argument("--discord", type=str, help="Discord Webhook URL")
+    parser.add_argument("--max-pages", type=int, default=10, help="1回の実行で処理する最大ページ数")
+    parser.add_argument("--reset", action="store_true", help="ページ1から強制リスタート")
     args = parser.parse_args()
 
     run_finder(
@@ -819,5 +847,7 @@ if __name__ == "__main__":
         output_file=args.output,
         target_prefecture=args.prefecture,
         use_new_arrivals=args.new,
-        discord_webhook=args.discord
+        discord_webhook=args.discord,
+        max_pages_per_run=args.max_pages,
+        force_reset=args.reset
     )

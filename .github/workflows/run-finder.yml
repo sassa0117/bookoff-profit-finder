@@ -5,6 +5,17 @@ on:
     # 毎時実行（日本時間で毎時0分）
     - cron: '0 * * * *'
   workflow_dispatch:  # 手動実行も可能
+    inputs:
+      reset:
+        description: 'ページ1から強制リスタート'
+        required: false
+        type: boolean
+        default: false
+      max_pages:
+        description: '処理ページ数'
+        required: false
+        type: number
+        default: 10
 
 permissions:
   contents: write
@@ -25,23 +36,22 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install requests playwright
-          playwright install chromium
+        run: pip install requests
 
-      - name: Run Finder (CD New Arrivals)
+      - name: Run Finder (CD & DVD)
         env:
           KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          python main.py --new --categories cd
-
-      - name: Run Finder (DVD New Arrivals)
-        env:
-          KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          python main.py --new --categories dvd
+          RESET_FLAG=""
+          if [ "${{ github.event.inputs.reset }}" = "true" ]; then
+            RESET_FLAG="--reset"
+          fi
+          MAX_PAGES="${{ github.event.inputs.max_pages }}"
+          if [ -z "$MAX_PAGES" ]; then
+            MAX_PAGES=10
+          fi
+          python main.py --categories cd dvd --max-pages $MAX_PAGES $RESET_FLAG
 
       - name: Commit cache and exclusion files
         run: |
@@ -56,6 +66,6 @@ jobs:
         if: always()
         with:
           name: results-${{ github.run_number }}
-          path: profit_akita_*.csv
+          path: profit_*.csv
           retention-days: 30
           if-no-files-found: ignore
