@@ -695,9 +695,9 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 for store in local_stores[:3]:  # 最大3店舗表示
                     print(f"     - {store['name']} ({store['city']})")
 
-            # ★★★ 全国在庫5以下のみKeepa API呼び出し ★★★
-            if total_stock > 5:
-                print(f"  → 在庫{total_stock}店舗 > 5、Keepaスキップ")
+            # ★★★ 全国在庫15以下のみKeepa API呼び出し ★★★
+            if total_stock > 15:
+                print(f"  → 在庫{total_stock}店舗 > 15、Keepaスキップ")
                 stock_skips += 1
                 continue
 
@@ -885,7 +885,7 @@ if __name__ == "__main__":
     parser.add_argument("--new", action="store_true", help="(互換性のため残す、カテゴリモードのみ使用)")
     parser.add_argument("--discord", type=str, help="Discord Webhook URL")
     parser.add_argument("--spreadsheet", type=str, help="Google Spreadsheet GAS URL")
-    parser.add_argument("--max-pages", type=int, default=10, help="1回の実行で処理する最大ページ数")
+    parser.add_argument("--max-pages", type=int, default=20, help="1回の実行で処理する最大ページ数")
     parser.add_argument("--reset", action="store_true", help="ページ1から強制リスタート")
     args = parser.parse_args()
 
