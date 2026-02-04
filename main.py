@@ -428,6 +428,42 @@ def get_keepa_data(jan_code):
         return None
 
 
+def send_to_spreadsheet(spreadsheet_url, results):
+    """Google Spreadsheetに結果を送信"""
+    if not spreadsheet_url or not results:
+        return
+
+    # 利益あり・薄利・Amazon未登録のみ送信
+    items_to_send = [r for r in results if r.get('status') in ('利益あり', '薄利', 'Amazon未登録')]
+    if not items_to_send:
+        print("スプレッドシート: 送信対象なし")
+        return
+
+    payload = {
+        'items': [{
+            'has_local': '○' if item.get('has_local') else '',
+            'status': item.get('status', ''),
+            'title': item.get('title', '')[:100],
+            'price': item.get('price', 0),
+            'amazon_used': item.get('amazon_used') or '',
+            'profit': item.get('profit') or '',
+            'total_stock': item.get('total_stock', 0),
+            'local_stores': item.get('local_stores', '')[:50],
+            'url': item.get('url', ''),
+            'keepa_url': item.get('keepa_url') or ''
+        } for item in items_to_send]
+    }
+
+    try:
+        r = requests.post(spreadsheet_url, json=payload, timeout=30)
+        if r.status_code == 200:
+            print(f"スプレッドシート送信完了: {len(items_to_send)}件")
+        else:
+            print(f"スプレッドシート送信失敗: {r.status_code}")
+    except Exception as e:
+        print(f"スプレッドシートエラー: {e}")
+
+
 def send_discord_notification(webhook_url, results, stats=None):
     """Discord Webhookで結果サマリーと利益商品を通知"""
     if not webhook_url:
@@ -526,7 +562,7 @@ def calculate_profit(bookoff_price, amazon_price):
     return profit
 
 
-def run_finder(categories=None, limit_per_category=20, output_file=None, target_prefecture="秋田県", use_new_arrivals=False, discord_webhook=None, max_pages_per_run=10, force_reset=False):
+def run_finder(categories=None, limit_per_category=20, output_file=None, target_prefecture="秋田県", use_new_arrivals=False, discord_webhook=None, max_pages_per_run=10, force_reset=False, spreadsheet_url=None):
     """メイン処理
 
     Args:
@@ -538,6 +574,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
         discord_webhook: Discord Webhook URL
         max_pages_per_run: 1回の実行で処理する最大ページ数
         force_reset: Trueならページ1から強制リスタート
+        spreadsheet_url: Google Spreadsheet GAS Web App URL
     """
     if categories is None:
         categories = ["dvd"]
@@ -825,6 +862,11 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
         }
         send_discord_notification(webhook_url, results, stats)
 
+    # スプレッドシート送信
+    sheet_url = spreadsheet_url or os.environ.get("SPREADSHEET_WEBHOOK_URL")
+    if sheet_url:
+        send_to_spreadsheet(sheet_url, results)
+
     return results
 
 
@@ -837,6 +879,7 @@ if __name__ == "__main__":
     parser.add_argument("--prefecture", type=str, default="秋田県", help="優先表示する都道府県")
     parser.add_argument("--new", action="store_true", help="(互換性のため残す、カテゴリモードのみ使用)")
     parser.add_argument("--discord", type=str, help="Discord Webhook URL")
+    parser.add_argument("--spreadsheet", type=str, help="Google Spreadsheet GAS URL")
     parser.add_argument("--max-pages", type=int, default=10, help="1回の実行で処理する最大ページ数")
     parser.add_argument("--reset", action="store_true", help="ページ1から強制リスタート")
     args = parser.parse_args()
@@ -849,5 +892,6 @@ if __name__ == "__main__":
         use_new_arrivals=args.new,
         discord_webhook=args.discord,
         max_pages_per_run=args.max_pages,
-        force_reset=args.reset
+        force_reset=args.reset,
+        spreadsheet_url=args.spreadsheet
     )
