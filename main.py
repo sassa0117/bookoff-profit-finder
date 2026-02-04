@@ -644,10 +644,10 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
         if caught_up:
             caught_up_count += 1
-            print(f"前回処理地点に追いつき完了")
+            print(f"前回処理地点に追いつき完了 → 9時リセットまで待機")
 
-        # 次回開始ページを保存
-        last_page[cat_name] = end_page + 1 if not caught_up else 1
+        # 次回開始ページを保存（追いつき完了でもリセットしない、9時リセットで初期化される）
+        last_page[cat_name] = end_page + 1
         print(f"取得商品数: {len(product_ids)}件")
 
         # 未処理のみ抽出
