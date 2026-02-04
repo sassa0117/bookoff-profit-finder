@@ -154,6 +154,7 @@ def get_product_ids_by_page(category_url, start_page=1, max_pages=50, seen_produ
     page = start_page
     end_page = start_page + max_pages - 1
     caught_up = False
+    consecutive_empty = 0  # 連続で未処理0件のページ数
 
     while page <= end_page:
         try:
@@ -172,16 +173,19 @@ def get_product_ids_by_page(category_url, start_page=1, max_pages=50, seen_produ
             new_on_page = [pid for pid in product_ids if pid not in seen_products] if seen_products else product_ids
 
             if seen_products and len(new_on_page) == 0:
-                print(f"  → このページは全て処理済み、追いつき完了")
-                caught_up = True
-                break
-
-            # 重複除去して追加
-            for pid in product_ids:
-                if pid not in all_product_ids:
-                    all_product_ids.append(pid)
-
-            print(f"    → 取得: {len(product_ids)}件 (未処理: {len(new_on_page)}件)")
+                consecutive_empty += 1
+                print(f"    → 全て処理済み（連続{consecutive_empty}ページ）")
+                if consecutive_empty >= 3:
+                    print(f"  → 連続3ページ空振り、追いつき完了")
+                    caught_up = True
+                    break
+            else:
+                consecutive_empty = 0  # リセット
+                # 重複除去して追加
+                for pid in product_ids:
+                    if pid not in all_product_ids:
+                        all_product_ids.append(pid)
+                print(f"    → 取得: {len(product_ids)}件 (未処理: {len(new_on_page)}件)")
 
             page += 1
             time.sleep(1)
