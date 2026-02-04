@@ -606,6 +606,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
         else:
             print(f"★ 強制リセット実行")
         last_page = {}  # ページ番号リセット
+        seen_products = set()  # 処理済みリストもリセット
         seen_data['last_reset'] = today_str
 
     # 除外リスト統計
