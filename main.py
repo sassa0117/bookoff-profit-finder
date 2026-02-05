@@ -596,7 +596,6 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
     cache_hits = 0
     seen_skips = 0
-    caught_up_count = 0
     exclude_skips = 0
     auto_excluded = 0
     stock_skips = 0  # 在庫多すぎスキップ
@@ -617,37 +616,22 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     exclude_stats = exclusion_db.get_stats()
     print(f"=== ブックオフ利益商品ファインダー ===")
     print(f"除外DB: JAN {exclude_stats['jan']}件, キーワード {exclude_stats['keywords']}件, 商品ID {exclude_stats['products']}件")
-    print(f"モード: カテゴリ（ページ継続）")
+    print(f"モード: 新着ページ")
     print(f"優先地域: {target_prefecture}")
     print(f"カテゴリ: {', '.join(categories)}")
-    print(f"1回あたり最大ページ: {max_pages_per_run}")
-    print(f"処理済み商品: {len(seen_products)}件")
-    print(f"前回ページ: {last_page}\n")
+    print(f"もっと見る上限: {max_pages_per_run}回")
+    print(f"処理済み商品: {len(seen_products)}件\n")
 
     for cat_name in categories:
-        if cat_name not in CATEGORIES:
-            print(f"不明なカテゴリ: {cat_name}")
-            continue
+        print(f"\n=== {cat_name.upper()} 新着 ===")
 
-        cat_url = CATEGORIES[cat_name]
-        start_page = last_page.get(cat_name, 1)
-
-        print(f"\n=== {cat_name.upper()} カテゴリ（ページ{start_page}から） ===")
-
-        # ページ単位で商品ID取得
-        product_ids, end_page, caught_up = get_product_ids_by_page(
-            cat_url,
-            start_page=start_page,
-            max_pages=max_pages_per_run,
+        # 新着ページから商品ID取得（Playwright）
+        product_ids = get_new_arrivals(
+            tab=cat_name,
+            limit=max_pages_per_run * 50,
             seen_products=seen_products
         )
 
-        if caught_up:
-            caught_up_count += 1
-            print(f"前回処理地点に追いつき完了 → 9時リセットまで待機")
-
-        # 次回開始ページを保存（追いつき完了でもリセットしない、9時リセットで初期化される）
-        last_page[cat_name] = end_page + 1
         print(f"取得商品数: {len(product_ids)}件")
 
         # 未処理のみ抽出
@@ -839,7 +823,6 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     # データ保存
     save_price_cache(price_cache)
     seen_data['all'] = seen_products
-    seen_data['last_page'] = last_page
     save_seen_products(seen_data)
 
     # サマリー
@@ -850,12 +833,10 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     print(f"在庫多スキップ（>5店舗）: {stock_skips}件")
     print(f"利益あり: {len(profit_items)}件（うち{target_prefecture}: {len(local_profits)}件）")
     print(f"残りトークン: {tokens_left}")
-    print(f"追いつき完了: {caught_up_count}カテゴリ")
     print(f"除外スキップ: {exclude_skips}件")
     print(f"自動除外追加: {auto_excluded}件")
     print(f"キャッシュヒット: {cache_hits}件")
     print(f"処理済み総数: {len(seen_products)}件")
-    print(f"次回開始ページ: {last_page}")
 
     # Discord通知
     webhook_url = discord_webhook or os.environ.get("DISCORD_WEBHOOK_URL")

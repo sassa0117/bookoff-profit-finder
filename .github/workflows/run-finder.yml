@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       max_pages:
-        description: '処理ページ数'
+        description: 'もっと見るクリック回数'
         required: false
         type: number
         default: 20
@@ -36,7 +36,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install requests playwright
+          playwright install chromium --with-deps
 
       - name: Run Finder (CD & DVD)
         env:
