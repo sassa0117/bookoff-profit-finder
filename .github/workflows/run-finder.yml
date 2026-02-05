@@ -2,15 +2,10 @@ name: Run BookOff Profit Finder
 
 on:
   schedule:
-    # 毎時実行（日本時間で毎時0分）
-    - cron: '0 * * * *'
+    # 毎日JST 9時（UTC 0時）に実行
+    - cron: '0 0 * * *'
   workflow_dispatch:  # 手動実行も可能
     inputs:
-      reset:
-        description: 'ページ1から強制リスタート'
-        required: false
-        type: boolean
-        default: false
       max_pages:
         description: 'もっと見るクリック回数'
         required: false
@@ -46,21 +41,17 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SPREADSHEET_WEBHOOK_URL: ${{ secrets.SPREADSHEET_WEBHOOK_URL }}
         run: |
-          RESET_FLAG=""
-          if [ "${{ github.event.inputs.reset }}" = "true" ]; then
-            RESET_FLAG="--reset"
-          fi
           MAX_PAGES="${{ github.event.inputs.max_pages }}"
           if [ -z "$MAX_PAGES" ]; then
-            MAX_PAGES=10
+            MAX_PAGES=20
           fi
-          python main.py --categories cd dvd --max-pages $MAX_PAGES $RESET_FLAG
+          python main.py --categories cd dvd --max-pages $MAX_PAGES
 
       - name: Commit cache and exclusion files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add price_cache.json seen_products.json exclusions.db || true
+          git add price_cache.json exclusions.db || true
           git diff --staged --quiet || git commit -m "Update cache and exclusion DB [skip ci]"
           git push || true
 

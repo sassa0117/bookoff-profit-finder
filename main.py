@@ -17,9 +17,6 @@ import json
 from datetime import datetime, timezone, timedelta
 import exclusion_db
 
-# 日本時間
-JST = timezone(timedelta(hours=9))
-
 # 設定（環境変数優先）
 KEEPA_API_KEY = os.environ.get("KEEPA_API_KEY", "1b2vuq9vbv5ejbagprfksl7ra5phbhlv3ngd65rp6gal6tu74uujvd5n2e5ate4a")
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -40,7 +37,6 @@ MIN_PROFIT = 300     # 最低利益（円）
 
 # キャッシュ設定
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "price_cache.json")
-SEEN_FILE = os.path.join(os.path.dirname(__file__), "seen_products.json")
 MIN_AMAZON_PRICE = 500  # この価格以下はゴミ扱い（円）
 KEEPA_DELAY = 3  # Keepa API呼び出し間隔（秒）
 
@@ -74,55 +70,6 @@ def save_price_cache(cache):
     with open(CACHE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
-
-def load_seen_products():
-    """処理済み商品データを読み込む
-
-    Returns:
-        dict: {
-            'all': set(全処理済みID),
-            'last_page': {category: 最後に処理したページ番号},
-            'last_reset': 最後にリセットした日付 (YYYY-MM-DD)
-        }
-    """
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                # 旧形式との互換性
-                if isinstance(data, list):
-                    return {'all': set(data), 'last_page': {}, 'last_reset': None}
-                if 'frontier' in data:  # 旧frontier形式
-                    return {'all': set(data.get('all', [])), 'last_page': {}, 'last_reset': None}
-                return {
-                    'all': set(data.get('all', [])),
-                    'last_page': data.get('last_page', {}),
-                    'last_reset': data.get('last_reset')
-                }
-        except:
-            return {'all': set(), 'last_page': {}, 'last_reset': None}
-    return {'all': set(), 'last_page': {}, 'last_reset': None}
-
-
-def save_seen_products(seen_data):
-    """処理済み商品データを保存"""
-    with open(SEEN_FILE, 'w', encoding='utf-8') as f:
-        json.dump({
-            'all': list(seen_data['all']),
-            'last_page': seen_data['last_page'],
-            'last_reset': seen_data['last_reset']
-        }, f)
-
-
-def should_reset_daily(seen_data):
-    """9時リセットが必要かチェック（日本時間9時以降、当日未リセットなら）"""
-    now_jst = datetime.now(JST)
-    today_str = now_jst.strftime("%Y-%m-%d")
-
-    # 9時以降かつ、当日まだリセットしていない場合
-    if now_jst.hour >= 9 and seen_data.get('last_reset') != today_str:
-        return True, today_str
-    return False, today_str
 
 
 
@@ -566,7 +513,7 @@ def calculate_profit(bookoff_price, amazon_price):
     return profit
 
 
-def run_finder(categories=None, limit_per_category=20, output_file=None, target_prefecture="秋田県", use_new_arrivals=False, discord_webhook=None, max_pages_per_run=10, force_reset=False, spreadsheet_url=None):
+def run_finder(categories=None, limit_per_category=20, output_file=None, target_prefecture="秋田県", use_new_arrivals=False, discord_webhook=None, max_pages_per_run=20, spreadsheet_url=None):
     """メイン処理
 
     Args:
@@ -576,8 +523,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
         target_prefecture: 優先表示する都道府県
         use_new_arrivals: (互換性のため残す、カテゴリモードのみ使用)
         discord_webhook: Discord Webhook URL
-        max_pages_per_run: 1回の実行で処理する最大ページ数
-        force_reset: Trueならページ1から強制リスタート
+        max_pages_per_run: もっと見るクリック回数
         spreadsheet_url: Google Spreadsheet GAS Web App URL
     """
     if categories is None:
@@ -590,37 +536,22 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     results = []
     tokens_left = 300
     price_cache = load_price_cache()
-    seen_data = load_seen_products()
-    seen_products = seen_data['all']
-    last_page = seen_data.get('last_page', {})
+    seen_products = set()  # 毎回フレッシュ（1日1回実行）
 
     cache_hits = 0
-    seen_skips = 0
     exclude_skips = 0
     auto_excluded = 0
     stock_skips = 0  # 在庫多すぎスキップ
     keepa_calls = 0  # Keepa API呼び出し回数
 
-    # 9時リセットチェック
-    need_reset, today_str = should_reset_daily(seen_data)
-    if force_reset or need_reset:
-        if need_reset:
-            print(f"★ 9時リセット実行（日本時間）")
-        else:
-            print(f"★ 強制リセット実行")
-        last_page = {}  # ページ番号リセット
-        seen_products = set()  # 処理済みリストもリセット
-        seen_data['last_reset'] = today_str
-
     # 除外リスト統計
     exclude_stats = exclusion_db.get_stats()
     print(f"=== ブックオフ利益商品ファインダー ===")
     print(f"除外DB: JAN {exclude_stats['jan']}件, キーワード {exclude_stats['keywords']}件, 商品ID {exclude_stats['products']}件")
-    print(f"モード: 新着ページ")
+    print(f"モード: 新着ページ（1日1回）")
     print(f"優先地域: {target_prefecture}")
     print(f"カテゴリ: {', '.join(categories)}")
-    print(f"もっと見る上限: {max_pages_per_run}回")
-    print(f"処理済み商品: {len(seen_products)}件\n")
+    print(f"もっと見る上限: {max_pages_per_run}回\n")
 
     for cat_name in categories:
         print(f"\n=== {cat_name.upper()} 新着 ===")
@@ -822,15 +753,13 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
     # データ保存
     save_price_cache(price_cache)
-    seen_data['all'] = seen_products
-    save_seen_products(seen_data)
 
     # サマリー
     profit_items = [r for r in results if r['status'] == '利益あり']
     local_profits = [r for r in profit_items if r.get('has_local')]
     print(f"\n=== サマリー ===")
     print(f"Keepa API呼び出し: {keepa_calls}回")
-    print(f"在庫多スキップ（>5店舗）: {stock_skips}件")
+    print(f"在庫多スキップ（>15店舗）: {stock_skips}件")
     print(f"利益あり: {len(profit_items)}件（うち{target_prefecture}: {len(local_profits)}件）")
     print(f"残りトークン: {tokens_left}")
     print(f"除外スキップ: {exclude_skips}件")
@@ -866,8 +795,7 @@ if __name__ == "__main__":
     parser.add_argument("--new", action="store_true", help="(互換性のため残す、カテゴリモードのみ使用)")
     parser.add_argument("--discord", type=str, help="Discord Webhook URL")
     parser.add_argument("--spreadsheet", type=str, help="Google Spreadsheet GAS URL")
-    parser.add_argument("--max-pages", type=int, default=20, help="1回の実行で処理する最大ページ数")
-    parser.add_argument("--reset", action="store_true", help="ページ1から強制リスタート")
+    parser.add_argument("--max-pages", type=int, default=20, help="もっと見るクリック回数")
     args = parser.parse_args()
 
     run_finder(
@@ -878,6 +806,5 @@ if __name__ == "__main__":
         use_new_arrivals=args.new,
         discord_webhook=args.discord,
         max_pages_per_run=args.max_pages,
-        force_reset=args.reset,
         spreadsheet_url=args.spreadsheet
     )
