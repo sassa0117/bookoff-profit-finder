@@ -41,6 +41,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SPREADSHEET_WEBHOOK_URL: ${{ secrets.SPREADSHEET_WEBHOOK_URL }}
         run: |
+          export PYTHONUNBUFFERED=1
           MAX_PAGES="${{ github.event.inputs.max_pages }}"
           if [ -z "$MAX_PAGES" ]; then
             MAX_PAGES=20
