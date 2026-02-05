@@ -17,6 +17,9 @@ import json
 from datetime import datetime, timezone, timedelta
 import exclusion_db
 
+# 日本時間
+JST = timezone(timedelta(hours=9))
+
 # 設定（環境変数優先）
 KEEPA_API_KEY = os.environ.get("KEEPA_API_KEY", "1b2vuq9vbv5ejbagprfksl7ra5phbhlv3ngd65rp6gal6tu74uujvd5n2e5ate4a")
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -37,6 +40,7 @@ MIN_PROFIT = 300     # 最低利益（円）
 
 # キャッシュ設定
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "price_cache.json")
+SEEN_FILE = os.path.join(os.path.dirname(__file__), "seen_products.json")
 MIN_AMAZON_PRICE = 500  # この価格以下はゴミ扱い（円）
 KEEPA_DELAY = 3  # Keepa API呼び出し間隔（秒）
 
@@ -74,6 +78,41 @@ def save_price_cache(cache):
 
 
 
+
+
+def load_seen_products():
+    """処理済み商品データを読み込む"""
+    if os.path.exists(SEEN_FILE):
+        try:
+            with open(SEEN_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return {'all': set(data), 'last_reset': None}
+                return {
+                    'all': set(data.get('all', [])),
+                    'last_reset': data.get('last_reset')
+                }
+        except:
+            return {'all': set(), 'last_reset': None}
+    return {'all': set(), 'last_reset': None}
+
+
+def save_seen_products(seen_data):
+    """処理済み商品データを保存"""
+    with open(SEEN_FILE, 'w', encoding='utf-8') as f:
+        json.dump({
+            'all': list(seen_data['all']),
+            'last_reset': seen_data['last_reset']
+        }, f)
+
+
+def should_reset_daily(seen_data):
+    """9時リセットが必要かチェック（日本時間9時以降、当日未リセットなら）"""
+    now_jst = datetime.now(JST)
+    today_str = now_jst.strftime("%Y-%m-%d")
+    if now_jst.hour >= 9 and seen_data.get('last_reset') != today_str:
+        return True, today_str
+    return False, today_str
 
 
 def is_garbage_jan(jan, cache):
@@ -540,7 +579,8 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     results = []
     tokens_left = 300
     price_cache = load_price_cache()
-    seen_products = set()  # 毎回フレッシュ（1日1回実行）
+    seen_data = load_seen_products()
+    seen_products = seen_data['all']
 
     cache_hits = 0
     exclude_skips = 0
@@ -548,14 +588,21 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     stock_skips = 0  # 在庫多すぎスキップ
     keepa_calls = 0  # Keepa API呼び出し回数
 
+    # 9時リセットチェック
+    need_reset, today_str = should_reset_daily(seen_data)
+    if need_reset:
+        print(f"★ 9時リセット実行（日本時間）")
+        seen_products = set()
+        seen_data['last_reset'] = today_str
+
     # 除外リスト統計
     exclude_stats = exclusion_db.get_stats()
     print(f"=== ブックオフ利益商品ファインダー ===")
     print(f"除外DB: JAN {exclude_stats['jan']}件, キーワード {exclude_stats['keywords']}件, 商品ID {exclude_stats['products']}件")
-    print(f"モード: 新着ページ（1日1回）")
+    print(f"モード: 新着ページ（毎時実行・トークン回復待ち）")
     print(f"優先地域: {target_prefecture}")
     print(f"カテゴリ: {', '.join(categories)}")
-    print(f"もっと見る上限: {max_pages_per_run}回\n")
+    print(f"処理済み商品: {len(seen_products)}件\n")
 
     for cat_name in categories:
         print(f"\n=== {cat_name.upper()} 新着 ===")
@@ -763,6 +810,8 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
 
     # データ保存
     save_price_cache(price_cache)
+    seen_data['all'] = seen_products
+    save_seen_products(seen_data)
 
     # サマリー
     profit_items = [r for r in results if r['status'] == '利益あり']
