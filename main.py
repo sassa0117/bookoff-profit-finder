@@ -345,7 +345,14 @@ def get_keepa_data(jan_code):
         r = requests.get(url, timeout=30)
         data = r.json()
 
+        # デバッグ: APIレスポンスの状態を表示
+        if 'error' in data:
+            print(f"  Keepa APIエラー: {data['error']}")
+        if 'tokensLeft' in data:
+            print(f"  Keepa トークン残: {data['tokensLeft']}")
+
         if 'products' not in data or not data['products']:
+            print(f"  Keepa: 商品なし (keys: {list(data.keys())})")
             return None
 
         p = data['products'][0]
