@@ -345,14 +345,11 @@ def get_keepa_data(jan_code):
         r = requests.get(url, timeout=30)
         data = r.json()
 
-        # デバッグ: APIレスポンスの状態を表示
         if 'error' in data:
             print(f"  Keepa APIエラー: {data['error']}")
-        if 'tokensLeft' in data:
-            print(f"  Keepa トークン残: {data['tokensLeft']}")
+            return {'error': data['error'], 'tokensLeft': data.get('tokensLeft', 0)}
 
         if 'products' not in data or not data['products']:
-            print(f"  Keepa: 商品なし (keys: {list(data.keys())})")
             return None
 
         p = data['products'][0]
@@ -657,6 +654,12 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
             time.sleep(KEEPA_DELAY)
             keepa = get_keepa_data(product['jan'])
             keepa_calls += 1
+
+            # Keepa APIエラーチェック
+            if keepa and 'error' in keepa:
+                print(f"  → Keepa APIエラー: {keepa['error'].get('type', '不明')}")
+                print(f"  → 処理停止")
+                break
 
             if not keepa:
                 print("  → Amazon未登録")
