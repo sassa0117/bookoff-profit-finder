@@ -293,9 +293,31 @@ def get_product_details(product_id):
         title_match = re.search(r'<h1[^>]*>([^<]+)</h1>', html)
         title = title_match.group(1).strip() if title_match else "不明"
 
-        # 価格
-        price_match = re.search(r'(\d{1,3}(?:,\d{3})*)\s*円', html)
-        price = int(price_match.group(1).replace(',', '')) if price_match else 0
+        # 価格取得（優先順位）
+        price = 0
+
+        # 1. JSON-LD構造化データから取得（最も信頼性が高い）
+        jsonld_price = re.search(r'"price"\s*:\s*(\d+)', html)
+        if jsonld_price:
+            price = int(jsonld_price.group(1))
+
+        # 2. meta descriptionから取得（「中古価格 〇〇円」形式）
+        if price == 0:
+            meta_price = re.search(r'中古価格\s*(\d{1,3}(?:,\d{3})*|\d+)\s*円', html)
+            if meta_price:
+                price = int(meta_price.group(1).replace(',', ''))
+
+        # 3. 一般的な価格パターン（フォールバック、全桁数対応）
+        if price == 0:
+            price_match = re.search(r'(\d{1,6}(?:,\d{3})*)\s*円\s*[（(]税込', html)
+            if price_match:
+                price = int(price_match.group(1).replace(',', ''))
+
+        # 4. 最終フォールバック
+        if price == 0:
+            price_match = re.search(r'(\d{1,3}(?:,\d{3})+|\d{4,})\s*円', html)
+            if price_match:
+                price = int(price_match.group(1).replace(',', ''))
 
         # JANコード（13桁、タイムスタンプっぽいものを除外）
         jan_matches = re.findall(r'(\d{13})', html)
