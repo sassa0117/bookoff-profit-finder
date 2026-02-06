@@ -480,6 +480,29 @@ def send_to_spreadsheet(spreadsheet_url, results):
         print(f"スプレッドシートエラー: {e}")
 
 
+def send_discord_csv(webhook_url, csv_path):
+    """Discord WebhookでCSVファイルを添付送信"""
+    if not webhook_url or not os.path.exists(csv_path):
+        return
+
+    # ファイルサイズチェック（空ファイルやヘッダのみは送らない）
+    if os.path.getsize(csv_path) < 100:
+        print("Discord CSV: データなし、送信スキップ")
+        return
+
+    try:
+        with open(csv_path, 'rb') as f:
+            files = {'file': (os.path.basename(csv_path), f, 'text/csv')}
+            payload = {'content': '📎 今回の結果CSV'}
+            r = requests.post(webhook_url, data=payload, files=files, timeout=30)
+        if r.status_code == 200:
+            print(f"Discord CSV送信完了: {csv_path}")
+        else:
+            print(f"Discord CSV送信失敗: {r.status_code}")
+    except Exception as e:
+        print(f"Discord CSVエラー: {e}")
+
+
 def send_discord_notification(webhook_url, results, stats=None):
     """Discord Webhookで結果サマリーと利益商品を通知"""
     if not webhook_url:
@@ -535,10 +558,14 @@ def send_discord_notification(webhook_url, results, stats=None):
     local_profits = [r for r in profit_items if r.get('has_local')]
 
     summary_parts = []
+    if stats.get('initial_tokens') is not None:
+        summary_parts.append(f"開始トークン: {stats['initial_tokens']}")
     if stats.get('keepa_calls'):
         summary_parts.append(f"Keepa: {stats['keepa_calls']}回")
     if stats.get('skipped'):
         summary_parts.append(f"スキップ: {stats['skipped']}件")
+    if stats.get('unregistered'):
+        summary_parts.append(f"Amazon未登録: {stats['unregistered']}件")
 
     content_parts = []
     if profit_items:
@@ -609,6 +636,7 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     auto_excluded = 0
     stock_skips = 0  # 在庫多すぎスキップ
     keepa_calls = 0  # Keepa API呼び出し回数
+    initial_tokens = None  # 開始時トークン数（最初のKeepa応答で取得）
 
     # 9時リセットチェック
     need_reset, today_str = should_reset_daily(seen_data)
@@ -748,6 +776,9 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
                 continue
 
             tokens_left = keepa['tokens_left']
+            if initial_tokens is None:
+                initial_tokens = tokens_left + 1  # この呼び出し分を足す
+                print(f"  → 開始時トークン: 約{initial_tokens}")
 
             # キャッシュに保存
             price_cache[product['jan']] = {
@@ -851,12 +882,17 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     # Discord通知
     webhook_url = discord_webhook or os.environ.get("DISCORD_WEBHOOK_URL")
     if webhook_url:
+        unregistered_count = len([r for r in results if r.get('status') == 'Amazon未登録'])
         stats = {
             'checked': len(results),
             'skipped': stock_skips + cache_hits + exclude_skips,
-            'keepa_calls': keepa_calls
+            'keepa_calls': keepa_calls,
+            'initial_tokens': initial_tokens,
+            'unregistered': unregistered_count
         }
         send_discord_notification(webhook_url, results, stats)
+        # CSV添付送信
+        send_discord_csv(webhook_url, output_file)
 
     # スプレッドシート送信
     sheet_url = spreadsheet_url or os.environ.get("SPREADSHEET_WEBHOOK_URL")
