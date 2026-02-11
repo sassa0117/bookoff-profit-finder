@@ -605,6 +605,107 @@ def calculate_profit(bookoff_price, amazon_price):
     return profit
 
 
+def save_pwa_data(results, tokens_left=0):
+    """PWA用にJSONデータを保存
+
+    - docs/data/runs/YYYYMMDD_HHMMSS.json に結果を保存
+    - docs/data/index.json を更新（72時間超の古いデータは自動削除）
+    """
+    base_dir = os.path.join(os.path.dirname(__file__), "docs", "data")
+    runs_dir = os.path.join(base_dir, "runs")
+    index_path = os.path.join(base_dir, "index.json")
+
+    os.makedirs(runs_dir, exist_ok=True)
+
+    now = datetime.now(JST)
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
+    iso_time = now.isoformat()
+
+    # 利益あり・薄利・Amazon未登録のみ保存
+    items_to_save = [r for r in results if r.get('status') in ('利益あり', '薄利', 'Amazon未登録')]
+
+    # HTMLは除外、シリアライズ可能なデータのみ
+    clean_items = []
+    for item in items_to_save:
+        clean_items.append({
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "price": item.get("price"),
+            "jan": item.get("jan"),
+            "url": item.get("url"),
+            "asin": item.get("asin"),
+            "amazon_used": item.get("amazon_used"),
+            "amazon_used_current": item.get("amazon_used_current"),
+            "amazon_used_avg90": item.get("amazon_used_avg90"),
+            "profit": item.get("profit"),
+            "rank": item.get("rank"),
+            "keepa_url": item.get("keepa_url"),
+            "total_stock": item.get("total_stock"),
+            "stock_rank": item.get("stock_rank"),
+            "has_local": item.get("has_local"),
+            "local_stores": item.get("local_stores"),
+            "status": item.get("status"),
+        })
+
+    profit_count = len([i for i in clean_items if i["status"] == "利益あり"])
+    local_count = len([i for i in clean_items if i.get("has_local")])
+
+    # ランファイル保存
+    run_data = {
+        "timestamp": iso_time,
+        "items": clean_items,
+        "tokens_left": tokens_left,
+    }
+    run_file = f"runs/{timestamp}.json"
+    run_path = os.path.join(base_dir, run_file)
+    with open(run_path, 'w', encoding='utf-8') as f:
+        json.dump(run_data, f, ensure_ascii=False)
+
+    # index.json 読み込み
+    index = []
+    if os.path.exists(index_path):
+        try:
+            with open(index_path, 'r', encoding='utf-8') as f:
+                index = json.load(f)
+        except:
+            index = []
+
+    # 新しいエントリを先頭に追加
+    index.insert(0, {
+        "file": f"data/{run_file}",
+        "timestamp": iso_time,
+        "total_items": len(clean_items),
+        "profit_count": profit_count,
+        "local_count": local_count,
+        "tokens_left": tokens_left,
+    })
+
+    # 72時間超の古いデータを削除
+    cutoff = now - timedelta(hours=72)
+    new_index = []
+    for entry in index:
+        try:
+            entry_time = datetime.fromisoformat(entry["timestamp"])
+            if entry_time.tzinfo is None:
+                entry_time = entry_time.replace(tzinfo=JST)
+            if entry_time >= cutoff:
+                new_index.append(entry)
+            else:
+                # 古いファイルを削除
+                old_path = os.path.join(os.path.dirname(base_dir), entry["file"])
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+                    print(f"PWA: 古いデータ削除 {entry['file']}")
+        except (ValueError, KeyError):
+            new_index.append(entry)
+
+    # index.json 保存
+    with open(index_path, 'w', encoding='utf-8') as f:
+        json.dump(new_index, f, ensure_ascii=False)
+
+    print(f"PWA: データ保存完了 {run_file} ({len(clean_items)}件, 利益{profit_count}件)")
+
+
 def run_finder(categories=None, limit_per_category=20, output_file=None, target_prefecture="秋田県", use_new_arrivals=False, discord_webhook=None, max_pages_per_run=20, spreadsheet_url=None):
     """メイン処理
 
@@ -898,6 +999,12 @@ def run_finder(categories=None, limit_per_category=20, output_file=None, target_
     sheet_url = spreadsheet_url or os.environ.get("SPREADSHEET_WEBHOOK_URL")
     if sheet_url:
         send_to_spreadsheet(sheet_url, results)
+
+    # PWAデータ保存
+    try:
+        save_pwa_data(results, tokens_left)
+    except Exception as e:
+        print(f"PWAデータ保存エラー: {e}")
 
     return results
 

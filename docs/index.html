@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>BookOff Profit Finder</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header id="app-header">
+    <h1>BookOff Profit Finder</h1>
+  </header>
+
+  <main id="app-main">
+    <!-- Dashboard View -->
+    <section id="view-dashboard" class="view active">
+      <div class="stats-grid">
+        <div class="stat-card stat-profit">
+          <div class="stat-value" id="stat-profit-count">-</div>
+          <div class="stat-label">利益商品</div>
+        </div>
+        <div class="stat-card stat-local">
+          <div class="stat-value" id="stat-local-count">-</div>
+          <div class="stat-label">秋田在庫</div>
+        </div>
+        <div class="stat-card stat-time">
+          <div class="stat-value" id="stat-last-run">-</div>
+          <div class="stat-label">最終実行</div>
+        </div>
+        <div class="stat-card stat-tokens">
+          <div class="stat-value" id="stat-tokens">-</div>
+          <div class="stat-label">残トークン</div>
+        </div>
+      </div>
+      <h2 class="section-title">利益商品 TOP5</h2>
+      <div id="top-items" class="item-list">
+        <div class="empty-state">データを読み込み中...</div>
+      </div>
+    </section>
+
+    <!-- Products View -->
+    <section id="view-products" class="view">
+      <div class="filter-bar">
+        <select id="filter-status">
+          <option value="all">全ステータス</option>
+          <option value="利益あり">利益あり</option>
+          <option value="薄利">薄利</option>
+          <option value="Amazon未登録">Amazon未登録</option>
+        </select>
+        <select id="filter-region">
+          <option value="all">全国</option>
+          <option value="local">秋田のみ</option>
+        </select>
+        <select id="filter-sort">
+          <option value="profit">利益順</option>
+          <option value="price">価格順</option>
+          <option value="stock">在庫順</option>
+        </select>
+      </div>
+      <div id="product-list" class="item-list">
+        <div class="empty-state">データを読み込み中...</div>
+      </div>
+    </section>
+
+    <!-- History View -->
+    <section id="view-history" class="view">
+      <div id="history-list" class="history-list">
+        <div class="empty-state">データを読み込み中...</div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Product Detail Overlay -->
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-content">
+      <button class="overlay-close" id="overlay-close">&times;</button>
+      <div id="overlay-body"></div>
+    </div>
+  </div>
+
+  <!-- Bottom Tab Navigation -->
+  <nav id="tab-nav">
+    <button class="tab active" data-view="dashboard">
+      <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+      <span>ダッシュボード</span>
+    </button>
+    <button class="tab" data-view="products">
+      <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V6h16v12zM6 10h2v2H6zm0 4h8v2H6zm10 0h2v2h-2zm-6-4h8v2h-8z"/></svg>
+      <span>商品一覧</span>
+    </button>
+    <button class="tab" data-view="history">
+      <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+      <span>実行履歴</span>
+    </button>
+  </nav>
+
+  <script src="js/data.js"></script>
+  <script src="js/filters.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
